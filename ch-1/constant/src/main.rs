@@ -1,17 +1,15 @@
-struct Point<T> {
-    x: T,
-    y: T,
-}
-
-impl<T> Point<T> {
-    fn x(&self) -> &T {
-        &self.x
+// 'a specifies that the returned reference lives as long as both input references
+fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
+    if x.len() > y.len() {
+        x
+    } else {
+        y
     }
 }
 
 fn main() {
-    let integer_point = Point { x: 5, y: 10 };
-    let float_point = Point { x: 1.0, y: 4.5 };
-
-    println!("Point X: {}", integer_point.x());
+    let str1 = String::from("long string");
+    let str2 = "short";
+    let result = longest(str1.as_str(), str2);
+    println!("The longest string is '{}'", result);
 }
