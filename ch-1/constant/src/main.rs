@@ -1,16 +1,10 @@
-macro_rules! create_vector {
-    ( $($x:expr ),* ) => {
-        {
-            let mut temp_vec = Vec::new();
-            $(
-                temp_vec.push($x);
-            )*
-            temp_vec
-        }
-    };
+// Note: Requires an async runtime like Tokio
+async fn fetch_data() -> String {
+    // Simulated async network call
+    String::from("Data received")
 }
 
-fn main() {
-    let my_vec = create_vector!(10, 20, 30);
-    println!("{:?}", my_vec);
+async fn process() {
+    let data = fetch_data().await; // Non-blocking wait
+    println!("{}", data);
 }
