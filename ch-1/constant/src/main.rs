@@ -1,15 +1,16 @@
-struct Seconds(u32);
-
-struct Minutes(u32);
-
-impl From<Minutes> for Seconds {
-    fn from(m: Minutes) -> Self {
-        Seconds(m.0 * 60)
-    }
+macro_rules! create_vector {
+    ( $($x:expr ),* ) => {
+        {
+            let mut temp_vec = Vec::new();
+            $(
+                temp_vec.push($x);
+            )*
+            temp_vec
+        }
+    };
 }
 
 fn main() {
-    let mins = Minutes(5);
-    let secs: Seconds = mins.into(); // Using Into automatically
-    println!("Seconds: {}", secs.0);
+    let my_vec = create_vector!(10, 20, 30);
+    println!("{:?}", my_vec);
 }
