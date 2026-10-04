@@ -1,14 +1,11 @@
-use std::sync::mpsc;
-use std::thread;
+// Recursive type requires Box to give it a known size
+enum List {
+    Cons(i32, Box<List>),
+    Nil,
+}
+
+use List::{Cons, Nil};
 
 fn main() {
-    let (tx, rx) = mpsc::channel();
-
-    thread::spawn(move || {
-        let msg = String::from("Hello from thread!");
-        tx.send(msg).unwrap();
-    });
-
-    let received = rx.recv().unwrap();
-    println!("Got: {}", received);
+    let list = Cons(1, Box::new(Cons(2, Box::new(Nil))));
 }
