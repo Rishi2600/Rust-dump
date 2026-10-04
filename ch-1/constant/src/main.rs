@@ -1,11 +1,14 @@
-// Recursive type requires Box to give it a known size
-enum List {
-    Cons(i32, Box<List>),
-    Nil,
-}
-
-use List::{Cons, Nil};
+use std::sync::Arc;
+use std::thread;
 
 fn main() {
-    let list = Cons(1, Box::new(Cons(2, Box::new(Nil))));
+    // Arc allows safe sharing across multiple threads
+    let shared_data = Arc::new(vec![1, 2, 3]);
+
+    for _ in 0..3 {
+        let data_clone = Arc::clone(&shared_data);
+        thread::spawn(move || {
+            println!("Read data: {:?}", data_clone);
+        });
+    }
 }
