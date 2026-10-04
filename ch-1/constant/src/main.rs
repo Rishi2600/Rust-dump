@@ -1,13 +1,17 @@
-trait Container {
-    type Item; // Associated type
-    fn add(&mut self, item: Self::Item);
+struct CustomSmartPointer {
+    data: String,
 }
 
-struct IntStack(Vec<i32>);
-
-impl Container for IntStack {
-    type Item = i32;
-    fn add(&mut self, item: Self::Item) {
-        self.0.push(item);
+impl Drop for CustomSmartPointer {
+    fn drop(&mut self) {
+        println!("Cleaning up pointer with data `{}`!", self.data);
     }
+}
+
+fn main() {
+    let _c = CustomSmartPointer {
+        data: String::from("resource"),
+    };
+    println!("Pointer created.");
+    // "Cleaning up pointer..." will automatically run at the end of scope
 }
