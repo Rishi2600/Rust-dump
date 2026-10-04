@@ -1,12 +1,14 @@
+use std::sync::mpsc;
+use std::thread;
+
 fn main() {
-    let numbers = vec![1, 2, 3, 4, 5];
+    let (tx, rx) = mpsc::channel();
 
-    // Iterator with closure to double even numbers
-    let processed: Vec<i32> = numbers
-        .into_iter()
-        .filter(|&x| x % 2 == 0)
-        .map(|x| x * 2)
-        .collect();
+    thread::spawn(move || {
+        let msg = String::from("Hello from thread!");
+        tx.send(msg).unwrap();
+    });
 
-    println!("{:?}", processed); // Output: [4, 8]
+    let received = rx.recv().unwrap();
+    println!("Got: {}", received);
 }
