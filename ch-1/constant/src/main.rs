@@ -1,13 +1,15 @@
-use std::num::ParseIntError;
-
-fn multiply_str(val: &str, factor: i32) -> Result<i32, ParseIntError> {
-    let number = val.parse::<i32>()?; // '?' returns early if it's an Err
-    Ok(number * factor)
+enum Status {
+    Pending,
+    Processing(u8), // progress percentage
+    Completed,
+    Failed(String),
 }
 
-fn main() {
-    match multiply_str("10", 3) {
-        Ok(res) => println!("Result: {}", res),
-        Err(e) => println!("Failed to parse: {}", e),
+fn print_status(status: Status) {
+    match status {
+        Status::Pending => println!("Task queued."),
+        Status::Processing(progress) => println!("In progress: {}%", progress),
+        Status::Completed => println!("Task finished successfully!"),
+        Status::Failed(reason) => println!("Task failed: {}", reason),
     }
 }
