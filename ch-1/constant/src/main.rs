@@ -1,14 +1,13 @@
-use std::sync::Arc;
-use std::thread;
+trait Container {
+    type Item; // Associated type
+    fn add(&mut self, item: Self::Item);
+}
 
-fn main() {
-    // Arc allows safe sharing across multiple threads
-    let shared_data = Arc::new(vec![1, 2, 3]);
+struct IntStack(Vec<i32>);
 
-    for _ in 0..3 {
-        let data_clone = Arc::clone(&shared_data);
-        thread::spawn(move || {
-            println!("Read data: {:?}", data_clone);
-        });
+impl Container for IntStack {
+    type Item = i32;
+    fn add(&mut self, item: Self::Item) {
+        self.0.push(item);
     }
 }
