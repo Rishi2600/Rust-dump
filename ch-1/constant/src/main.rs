@@ -1,11 +1,14 @@
+fn find_user(id: u32) -> Option<String> {
+    if id == 1 {
+        Some(String::from("Alice"))
+    } else {
+        None
+    }
+}
+
 fn main() {
-    let mut data = String::from("Rust");
-
-    // Creating one mutable reference
-    let ref1 = &mut data;
-    ref1.push_str(" Language");
-
-    // let ref2 = &mut data; // Error! Cannot borrow `data` as mutable more than once at a time
-    
-    println!("{}", ref1);
+    match find_user(1) {
+        Some(name) => println!("Found user: {}", name),
+        None => println!("User not found"),
+    }
 }
