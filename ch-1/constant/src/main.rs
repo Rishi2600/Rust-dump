@@ -1,21 +1,25 @@
-pub trait EventHandler {
-    fn handle(&self, event: &str);
+#[derive(Debug, Clone, Copy)]
+pub struct NodeId(usize);
+
+pub struct Node {
+    pub data: String,
+    pub children: Vec<NodeId>,
 }
 
-pub struct EventDispatcher {
-    handlers: Vec<Box<dyn EventHandler>>,
+pub struct GraphArena {
+    nodes: Vec<Node>,
 }
 
-impl EventDispatcher {
-    pub fn new() -> Self { Self { handlers: Vec::new() } }
+impl GraphArena {
+    pub fn new() -> Self { Self { nodes: Vec::new() } }
 
-    pub fn register(&mut self, handler: Box<dyn EventHandler>) {
-        self.handlers.push(handler);
+    pub fn add_node(&mut self, data: &str) -> NodeId {
+        let id = NodeId(self.nodes.len());
+        self.nodes.push(Node { data: data.to_string(), children: Vec::new() });
+        id
     }
 
-    pub fn dispatch(&self, event: &str) {
-        for handler in &self.handlers {
-            handler.handle(event);
-        }
+    pub fn add_edge(&mut self, parent: NodeId, child: NodeId) {
+        self.nodes[parent.0].children.push(child);
     }
 }
