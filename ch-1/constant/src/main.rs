@@ -1,28 +1,31 @@
-use std::fmt;
-use std::io;
-use std::num::ParseIntError;
+use std::ops::{Deref, DerefMut};
 
-#[derive(Debug)]
-pub enum AppError {
-    Io(io::Error),
-    Parse(ParseIntError),
-    Custom(String),
+pub struct HardwareResource {
+    pub id: u32,
 }
 
-impl fmt::Display for AppError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AppError::Io(e) => write!(f, "IO Error: {}", e),
-            AppError::Parse(e) => write!(f, "Parse Error: {}", e),
-            AppError::Custom(msg) => write!(f, "Application Error: {}", msg),
-        }
+pub struct ResourceGuard<'a> {
+    resource: &'a mut HardwareResource,
+}
+
+impl<'a> ResourceGuard<'a> {
+    pub fn lock(resource: &'a mut HardwareResource) -> Self {
+        println!("Locking resource {}", resource.id);
+        Self { resource }
     }
 }
 
-impl From<io::Error> for AppError {
-    fn from(err: io::Error) -> Self { AppError::Io(err) }
+impl<'a> Deref for ResourceGuard<'a> {
+    type Target = HardwareResource;
+    fn deref(&self) -> &Self::Target { self.resource }
 }
 
-impl From<ParseIntError> for AppError {
-    fn from(err: ParseIntError) -> Self { AppError::Parse(err) }
+impl<'a> DerefMut for ResourceGuard<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target { self.resource }
+}
+
+impl<'a> Drop for ResourceGuard<'a> {
+    fn drop(&mut self) {
+        println!("Unlocking resource {}", self.resource.id);
+    }
 }
