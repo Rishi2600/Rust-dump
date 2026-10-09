@@ -1,18 +1,22 @@
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct PacketHeader {
-    pub magic: u16,
-    pub length: u16,
+use std::cell::RefCell;
+use std::rc::Rc;
+
+pub trait System {
+    fn update(&mut self);
 }
 
-pub fn parse_packet_header(bytes: &[u8]) -> Option<&PacketHeader> {
-    if bytes.len() < std::mem::size_of::<PacketHeader>() {
-        return None;
+pub struct Engine {
+    systems: Vec<Rc<RefCell<dyn System>>>,
+}
+
+impl Engine {
+    pub fn register<S: System + 'static>(&mut self, system: S) {
+        self.systems.push(Rc::new(RefCell::new(system)));
     }
 
-    // Unsafe pointer casting for zero-copy read
-    unsafe {
-        let ptr = bytes.as_ptr() as *const PacketHeader;
-        Some(&*ptr)
+    pub fn tick(&self) {
+        for sys in &self.systems {
+            sys.borrow_mut().update();
+        }
     }
 }
