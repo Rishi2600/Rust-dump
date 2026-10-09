@@ -1,31 +1,17 @@
-pub struct Unset;
-pub struct Set<T>(T);
-
-pub struct RequestBuilder<UrlState, MethodState> {
-    url: UrlState,
-    method: MethodState,
+#[derive(Debug)]
+pub struct Header<'a> {
+    pub key: &'a str,
+    pub value: &'a str,
 }
 
-impl RequestBuilder<Unset, Unset> {
-    pub fn new() -> Self {
-        RequestBuilder { url: Unset, method: Unset }
-    }
-}
+pub fn parse_header<'a>(raw: &'a str) -> Result<Header<'a>, &'static str> {
+    let mut parts = raw.splitn(2, ':');
+    let key = parts.next().ok_or("Missing header key")?.trim();
+    let value = parts.next().ok_or("Missing header value")?.trim();
 
-impl<M> RequestBuilder<Unset, M> {
-    pub fn url(self, url: &str) -> RequestBuilder<Set<String>, M> {
-        RequestBuilder { url: Set(url.to_string()), method: self.method }
-    }
-}
-
-impl<U> RequestBuilder<U, Unset> {
-    pub fn method(self, method: &str) -> RequestBuilder<U, Set<String>> {
-        RequestBuilder { url: self.url, method: Set(method.to_string()) }
-    }
-}
-
-impl RequestBuilder<Set<String>, Set<String>> {
-    pub fn send(self) -> String {
-        format!("Sending {} request to {}", self.method.0, self.url.0)
+    if key.is_empty() {
+        Err("Key cannot be empty")
+    } else {
+        Ok(Header { key, value })
     }
 }
