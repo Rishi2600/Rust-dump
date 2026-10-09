@@ -1,20 +1,12 @@
-use std::sync::mpsc;
-use std::thread;
-
-type Job = Box<dyn FnOnce() + Send + 'static>;
-
-pub struct SimpleThreadPool {
-    workers: Vec<Option<thread::JoinHandle<()>>>,
-    sender: Option<mpsc::Sender<Job>>,
+pub fn process_data<F>(callback: F)
+where
+    F: for<'a> Fn(&'a str) -> usize,
+{
+    let local_data = String::from("runtime generated value");
+    let len = callback(&local_data);
+    println!("Callback computed length: {}", len);
 }
 
-impl Drop for SimpleThreadPool {
-    fn drop(&mut self) {
-        drop(self.sender.take()); // Close channel signaling threads to exit loop
-        for worker in &mut self.workers {
-            if let Some(thread) = worker.take() {
-                thread.join().unwrap();
-            }
-        }
-    }
+fn main() {
+    process_data(|s| s.len());
 }
