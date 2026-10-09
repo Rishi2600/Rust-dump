@@ -1,25 +1,18 @@
-#[derive(Debug, Clone, Copy)]
-pub struct NodeId(usize);
-
-pub struct Node {
-    pub data: String,
-    pub children: Vec<NodeId>,
+pub struct ChunkWindows<'a, T> {
+    slice: &'a [T],
+    window_size: usize,
 }
 
-pub struct GraphArena {
-    nodes: Vec<Node>,
-}
+impl<'a, T> Iterator for ChunkWindows<'a, T> {
+    type Item = &'a [T];
 
-impl GraphArena {
-    pub fn new() -> Self { Self { nodes: Vec::new() } }
-
-    pub fn add_node(&mut self, data: &str) -> NodeId {
-        let id = NodeId(self.nodes.len());
-        self.nodes.push(Node { data: data.to_string(), children: Vec::new() });
-        id
-    }
-
-    pub fn add_edge(&mut self, parent: NodeId, child: NodeId) {
-        self.nodes[parent.0].children.push(child);
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.slice.len() < self.window_size {
+            None
+        } else {
+            let res = &self.slice[..self.window_size];
+            self.slice = &self.slice[1..];
+            Some(res)
+        }
     }
 }
