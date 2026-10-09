@@ -1,16 +1,21 @@
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::marker::PhantomData;
+use std::ops::Add;
 
-pub struct ReadyFuture<T>(Option<T>);
+#[derive(Debug, Clone, Copy)]
+pub struct Meters;
+#[derive(Debug, Clone, Copy)]
+pub struct Seconds;
 
-impl<T: Unpin> Future for ReadyFuture<T> {
-    type Output = T;
+#[derive(Debug, Clone, Copy)]
+pub struct Quantity<Unit>(f64, PhantomData<Unit>);
 
-    fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.0.take() {
-            Some(val) => Poll::Ready(val),
-            None => panic!("Future polled after completion"),
-        }
+impl<Unit> Quantity<Unit> {
+    pub fn new(value: f64) -> Self { Quantity(value, PhantomData) }
+}
+
+impl<Unit> Add for Quantity<Unit> {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self::Output {
+        Quantity::new(self.0 + rhs.0)
     }
 }
