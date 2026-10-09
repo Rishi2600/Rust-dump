@@ -1,31 +1,21 @@
-use std::ops::{Deref, DerefMut};
-
-pub struct HardwareResource {
-    pub id: u32,
+pub trait EventHandler {
+    fn handle(&self, event: &str);
 }
 
-pub struct ResourceGuard<'a> {
-    resource: &'a mut HardwareResource,
+pub struct EventDispatcher {
+    handlers: Vec<Box<dyn EventHandler>>,
 }
 
-impl<'a> ResourceGuard<'a> {
-    pub fn lock(resource: &'a mut HardwareResource) -> Self {
-        println!("Locking resource {}", resource.id);
-        Self { resource }
+impl EventDispatcher {
+    pub fn new() -> Self { Self { handlers: Vec::new() } }
+
+    pub fn register(&mut self, handler: Box<dyn EventHandler>) {
+        self.handlers.push(handler);
     }
-}
 
-impl<'a> Deref for ResourceGuard<'a> {
-    type Target = HardwareResource;
-    fn deref(&self) -> &Self::Target { self.resource }
-}
-
-impl<'a> DerefMut for ResourceGuard<'a> {
-    fn deref_mut(&mut self) -> &mut Self::Target { self.resource }
-}
-
-impl<'a> Drop for ResourceGuard<'a> {
-    fn drop(&mut self) {
-        println!("Unlocking resource {}", self.resource.id);
+    pub fn dispatch(&self, event: &str) {
+        for handler in &self.handlers {
+            handler.handle(event);
+        }
     }
 }
