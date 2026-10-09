@@ -1,12 +1,16 @@
-pub fn process_data<F>(callback: F)
-where
-    F: for<'a> Fn(&'a str) -> usize,
-{
-    let local_data = String::from("runtime generated value");
-    let len = callback(&local_data);
-    println!("Callback computed length: {}", len);
-}
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
-fn main() {
-    process_data(|s| s.len());
+pub struct ReadyFuture<T>(Option<T>);
+
+impl<T: Unpin> Future for ReadyFuture<T> {
+    type Output = T;
+
+    fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.0.take() {
+            Some(val) => Poll::Ready(val),
+            None => panic!("Future polled after completion"),
+        }
+    }
 }
