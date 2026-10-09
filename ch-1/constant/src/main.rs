@@ -1,20 +1,26 @@
-macro_rules! create_flags {
-    ($name:ident { $($flag:ident = $val:expr),* $(,)? }) => {
-        pub struct $name(u8);
-        impl $name {
-            $(
-                pub const $flag: u8 = $val;
-            )*
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio::time::{sleep, Duration, Instant};
 
-            pub fn new() -> Self { $name(0) }
-            pub fn set(&mut self, flag: u8) { self.0 |= flag; }
-            pub fn is_set(&self, flag: u8) -> bool { (self.0 & flag) != 0 }
-        }
-    };
+pub struct RateLimiter {
+    interval: Duration,
+    last_run: Arc<Mutex<Instant>>,
 }
 
-create_flags!(Permissions {
-    READ = 0b0001,
-    WRITE = 0b0010,
-    EXECUTE = 0b0100,
-});
+impl RateLimiter {
+    pub fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            last_run: Arc::new(Mutex::new(Instant::now() - interval)),
+        }
+    }
+
+    pub async fn wait(&self) {
+        let mut last = self.last_run.lock().await;
+        let elapsed = last.elapsed();
+        if elapsed < self.interval {
+            sleep(self.interval - elapsed).await;
+        }
+        *last = Instant::now();
+    }
+}
