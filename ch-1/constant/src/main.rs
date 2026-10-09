@@ -1,22 +1,11 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-
-pub trait System {
-    fn update(&mut self);
+pub struct Node<T> {
+    pub value: T,
+    pub next: Option<Box<Node<T>>>,
+    pub prev: *mut Node<T>, // Raw pointer to avoid borrow checker loops
 }
 
-pub struct Engine {
-    systems: Vec<Rc<RefCell<dyn System>>>,
-}
-
-impl Engine {
-    pub fn register<S: System + 'static>(&mut self, system: S) {
-        self.systems.push(Rc::new(RefCell::new(system)));
-    }
-
-    pub fn tick(&self) {
-        for sys in &self.systems {
-            sys.borrow_mut().update();
-        }
+impl<T> Node<T> {
+    pub fn new(value: T) -> Self {
+        Node { value, next: None, prev: std::ptr::null_mut() }
     }
 }
