@@ -1,17 +1,28 @@
+use std::fmt;
+use std::io;
+use std::num::ParseIntError;
+
 #[derive(Debug)]
-pub struct Header<'a> {
-    pub key: &'a str,
-    pub value: &'a str,
+pub enum AppError {
+    Io(io::Error),
+    Parse(ParseIntError),
+    Custom(String),
 }
 
-pub fn parse_header<'a>(raw: &'a str) -> Result<Header<'a>, &'static str> {
-    let mut parts = raw.splitn(2, ':');
-    let key = parts.next().ok_or("Missing header key")?.trim();
-    let value = parts.next().ok_or("Missing header value")?.trim();
-
-    if key.is_empty() {
-        Err("Key cannot be empty")
-    } else {
-        Ok(Header { key, value })
+impl fmt::Display for AppError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AppError::Io(e) => write!(f, "IO Error: {}", e),
+            AppError::Parse(e) => write!(f, "Parse Error: {}", e),
+            AppError::Custom(msg) => write!(f, "Application Error: {}", msg),
+        }
     }
+}
+
+impl From<io::Error> for AppError {
+    fn from(err: io::Error) -> Self { AppError::Io(err) }
+}
+
+impl From<ParseIntError> for AppError {
+    fn from(err: ParseIntError) -> Self { AppError::Parse(err) }
 }
