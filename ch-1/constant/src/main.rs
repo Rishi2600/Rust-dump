@@ -1,27 +1,31 @@
-use std::collections::VecDeque;
-use std::sync::{Arc, Condvar, Mutex};
+pub struct Unset;
+pub struct Set<T>(T);
 
-pub struct WorkQueue<T> {
-    queue: Mutex<VecDeque<T>>,
-    cond: Condvar,
+pub struct RequestBuilder<UrlState, MethodState> {
+    url: UrlState,
+    method: MethodState,
 }
 
-impl<T> WorkQueue<T> {
+impl RequestBuilder<Unset, Unset> {
     pub fn new() -> Self {
-        Self { queue: Mutex::new(VecDeque::new()), cond: Condvar::new() }
+        RequestBuilder { url: Unset, method: Unset }
     }
+}
 
-    pub fn push(&self, item: T) {
-        let mut q = self.queue.lock().unwrap();
-        q.push_back(item);
-        self.cond.notify_one();
+impl<M> RequestBuilder<Unset, M> {
+    pub fn url(self, url: &str) -> RequestBuilder<Set<String>, M> {
+        RequestBuilder { url: Set(url.to_string()), method: self.method }
     }
+}
 
-    pub fn pop(&self) -> T {
-        let mut q = self.queue.lock().unwrap();
-        while q.is_empty() {
-            q = self.cond.wait(q).unwrap();
-        }
-        q.pop_front().unwrap()
+impl<U> RequestBuilder<U, Unset> {
+    pub fn method(self, method: &str) -> RequestBuilder<U, Set<String>> {
+        RequestBuilder { url: self.url, method: Set(method.to_string()) }
+    }
+}
+
+impl RequestBuilder<Set<String>, Set<String>> {
+    pub fn send(self) -> String {
+        format!("Sending {} request to {}", self.method.0, self.url.0)
     }
 }
