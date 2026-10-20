@@ -1,31 +1,40 @@
-use std::cell::UnsafeCell;
-use std::marker::PhantomPinned;
-use std::pin::Pin;
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::thread_local;
 
-pub struct SelfRefBuffer {
-    data: String,
-    slice: UnsafeCell<*const str>,
-    _pin: PhantomPinned,
+pub struct HazardPointer {
+    ptr: AtomicPtr<()>,
 }
 
-impl SelfRefBuffer {
-    pub fn new(text: &str) -> Pin<Box<Self>> {
-        let res = SelfRefBuffer {
-            data: text.to_string(),
-            slice: UnsafeCell::new(std::ptr::null()),
-            _pin: PhantomPinned,
-        };
-        let mut boxed = Box::pin(res);
-        
-        let self_ptr: *const str = &boxed.data;
-        unsafe {
-            let mut_ref = Pin::as_mut(&mut boxed);
-            *mut_ref.slice.get() = self_ptr;
-        }
-        boxed
-    }
+thread_local! {
+    static HAZARD_RESERVOIR: HazardPointer = HazardPointer {
+        ptr: AtomicPtr::new(std::ptr::null_mut()),
+    };
+}
 
-    pub fn get_borrowed<'a>(self: &'a Pin<Box<Self>>) -> &'a str {
-        unsafe { &**self.slice.get() }
+pub struct HpGuard<T> {
+    ptr: *mut T,
+}
+
+impl<T> HpGuard<T> {
+    pub fn protect(atomic: &AtomicPtr<T>) -> Option<Self> {
+        let ptr = atomic.load(Ordering::Relaxed);
+        HAZARD_RESERVOIR.with(|hp| {
+            hp.ptr.store(ptr as *mut (), Ordering::Release);
+        });
+
+        // Double check against racing deletion
+        if atomic.load(Ordering::Acquire) != ptr {
+            None
+        } else {
+            Some(HpGuard { ptr })
+        }
+    }
+}
+
+impl<T> Drop for HpGuard<T> {
+    fn drop(&mut self) {
+        HAZARD_RESERVOIR.with(|hp| {
+            hp.ptr.store(std::ptr::null_mut(), Ordering::Release);
+        });
     }
 }
