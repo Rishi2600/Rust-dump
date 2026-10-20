@@ -1,25 +1,32 @@
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub enum State { Idle, Running, Stopped }
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::Arc;
 
-pub struct Fsm<const CURRENT: State>;
-
-impl Fsm<{ State::Idle }> {
-    pub fn start(self) -> Fsm<{ State::Running }> {
-        println!("Transition: Idle -> Running");
-        Fsm
-    }
+pub struct RcuCell<T> {
+    ptr: AtomicPtr<T>,
 }
 
-impl Fsm<{ State::Running }> {
-    pub fn stop(self) -> Fsm<{ State::Stopped }> {
-        println!("Transition: Running -> Stopped");
-        Fsm
+impl<T> RcuCell<T> {
+    pub fn new(val: T) -> Self {
+        let heap_val = Box::into_raw(Box::new(val));
+        Self { ptr: AtomicPtr::new(heap_val) }
     }
-}
 
-fn execute_fsm() {
-    let state = Fsm::<{ State::Idle }>;
-    let running = state.start();
-    let _stopped = running.stop();
-    // running.stop(); // Error! `running` value moved.
+    pub fn read(&self) -> Arc<T> {
+        unsafe {
+            let raw = self.ptr.load(Ordering::Acquire);
+            // Re-create temporary Arc clone reference safely
+            let temp = Arc::from_raw(raw);
+            let clone = Arc::clone(&temp);
+            let _ = Arc::into_raw(temp); // Keep original pointer valid
+            clone
+        }
+    }
+
+    pub fn update(&self, new_val: T) {
+        let new_raw = Box::into_raw(Box::new(new_val));
+        let old_raw = self.ptr.swap(new_raw, Ordering::AcqRel);
+        unsafe {
+            let _ = Box::from_raw(old_raw); // Free old allocation safely
+        }
+    }
 }
