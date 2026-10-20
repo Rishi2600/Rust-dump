@@ -1,21 +1,26 @@
-use std::any::{Any, TypeId};
-use std::collections::HashMap;
-use std::sync::Arc;
-
-#[derive(Default)]
-pub struct Container {
-    services: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+pub trait Visitor<T> {
+    fn visit_number(&mut self, val: f64) -> T;
+    fn visit_add(&mut self, left: &Expr, right: &Expr) -> T;
 }
 
-impl Container {
-    pub fn register<T: Send + Sync + 'static>(&mut self, service: T) {
-        self.services.insert(TypeId::of::<T>(), Arc::new(service));
-    }
+pub enum Expr {
+    Number(f64),
+    Add(Box<Expr>, Box<Expr>),
+}
 
-    pub fn resolve<T: Send + Sync + 'static>(&self) -> Option<Arc<T>> {
-        self.services
-            .get(&TypeId::of::<T>())
-            .cloned()
-            .and_then(|boxed| boxed.downcast::<T>().ok())
+impl Expr {
+    pub fn accept<T>(&self, visitor: &mut dyn Visitor<T>) -> T {
+        match self {
+            Expr::Number(val) => visitor.visit_number(*val),
+            Expr::Add(l, r) => visitor.visit_add(l, r),
+        }
+    }
+}
+
+pub struct Evaluator;
+impl Visitor<f64> for Evaluator {
+    fn visit_number(&mut self, val: f64) -> f64 { val }
+    fn visit_add(&mut self, left: &Expr, right: &Expr) -> f64 {
+        left.accept(self) + right.accept(self)
     }
 }
