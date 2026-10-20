@@ -1,50 +1,44 @@
-use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::future::Future;
+use std::pin::Pin;
 
-pub struct RingBuffer<T, const CAP: usize> {
-    buffer: [UnsafeCell<Option<T>>; CAP],
-    head: AtomicUsize,
-    tail: AtomicUsize,
+pub struct Unauthenticated;
+pub struct Authenticated { token: String };
+
+pub struct Request<State> {
+    pub body: String,
+    pub state: State,
 }
 
-unsafe impl<T: Send, const CAP: usize> Sync for RingBuffer<T, CAP> {}
-
-impl<T, const CAP: usize> RingBuffer<T, CAP> {
-    pub fn new() -> Arc<Self> {
-        let buffer = std::array::from_fn(|_| UnsafeCell::new(None));
-        Arc::new(Self {
-            buffer,
-            head: AtomicUsize::new(0),
-            tail: AtomicUsize::new(0),
-        })
+impl Request<Unauthenticated> {
+    pub fn new(body: &str) -> Self {
+        Request { body: body.to_string(), state: Unauthenticated }
     }
 
-    pub fn push(&self, value: T) -> Result<(), T> {
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Acquire);
-
-        if head.wrapping_add(1) % CAP == tail % CAP {
-            return Err(value); // Buffer full
+    pub fn authenticate(self, token: &str) -> Request<Authenticated> {
+        Request {
+            body: self.body,
+            state: Authenticated { token: token.to_string() },
         }
+    }
+}
 
-        unsafe {
-            *self.buffer[head % CAP].get() = Some(value);
-        }
-        self.head.store(head.wrapping_add(1), Ordering::Release);
-        Ok(())
+pub type AsyncHandler = Box<
+    dyn for<'a> Fn(&'a Request<Authenticated>) -> Pin<Box<dyn Future<Output = String> + 'a>>
+>;
+
+pub struct RequestPipeline {
+    handler: AsyncHandler,
+}
+
+impl RequestPipeline {
+    pub fn new<F>(handler: F) -> Self
+    where
+        F: for<'a> Fn(&'a Request<Authenticated>) -> Pin<Box<dyn Future<Output = String> + 'a>> + 'static,
+    {
+        Self { handler: Box::new(handler) }
     }
 
-    pub fn pop(&self) -> Option<T> {
-        let tail = self.tail.load(Ordering::Relaxed);
-        let head = self.head.load(Ordering::Acquire);
-
-        if tail % CAP == head % CAP {
-            return None; // Buffer empty
-        }
-
-        let val = unsafe { (*self.buffer[tail % CAP].get()).take() };
-        self.tail.store(tail.wrapping_add(1), Ordering::Release);
-        val
+    pub async fn execute(&self, req: Request<Authenticated>) -> String {
+        (self.handler)(&req).await
     }
 }
