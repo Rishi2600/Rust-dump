@@ -1,44 +1,47 @@
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-pub struct Unauthenticated;
-pub struct Authenticated { token: String };
+pub type TaskFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
-pub struct Request<State> {
-    pub body: String,
-    pub state: State,
+pub struct TaskQueue {
+    queue: Mutex<VecDeque<TaskFuture>>,
 }
 
-impl Request<Unauthenticated> {
-    pub fn new(body: &str) -> Self {
-        Request { body: body.to_string(), state: Unauthenticated }
+impl TaskQueue {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self { queue: Mutex::new(VecDeque::new()) })
     }
 
-    pub fn authenticate(self, token: &str) -> Request<Authenticated> {
-        Request {
-            body: self.body,
-            state: Authenticated { token: token.to_string() },
-        }
-    }
-}
-
-pub type AsyncHandler = Box<
-    dyn for<'a> Fn(&'a Request<Authenticated>) -> Pin<Box<dyn Future<Output = String> + 'a>>
->;
-
-pub struct RequestPipeline {
-    handler: AsyncHandler,
-}
-
-impl RequestPipeline {
-    pub fn new<F>(handler: F) -> Self
+    pub fn spawn<F>(&self, future: F)
     where
-        F: for<'a> Fn(&'a Request<Authenticated>) -> Pin<Box<dyn Future<Output = String> + 'a>> + 'static,
+        F: Future<Output = ()> + Send + 'static,
     {
-        Self { handler: Box::new(handler) }
+        self.queue.lock().unwrap().push_back(Box::pin(future));
     }
 
-    pub async fn execute(&self, req: Request<Authenticated>) -> String {
-        (self.handler)(&req).await
+    pub fn run_next(self: &Arc<Self>) -> bool {
+        let mut task = match self.queue.lock().unwrap().pop_front() {
+            Some(t) => t,
+            None => return false,
+        };
+
+        let waker = dummy_waker();
+        let mut cx = Context::from_waker(&waker);
+        if let Poll::Pending = task.as_mut().poll(&mut cx) {
+            self.queue.lock().unwrap().push_back(task);
+        }
+        true
     }
+}
+
+fn dummy_waker() -> Waker {
+    unsafe fn no_op(_: *const ()) {}
+    unsafe fn clone(_: *const ()) -> RawWaker { raw_waker() }
+    unsafe fn raw_waker() -> RawWaker {
+        RawWaker::new(std::ptr::null(), &RawWakerVTable::new(clone, no_op, no_op, no_op))
+    }
+    unsafe { Waker::from_raw(raw_waker()) }
 }
