@@ -1,21 +1,29 @@
-use std::os::raw::c_void;
-use std::panic::catch_unwind;
-
-pub type NativeCallback = extern "C" fn(*const c_void, i32);
-
-pub struct Context {
-    pub callback: NativeCallback,
-    pub user_data: *const c_void,
+// Representative structural pattern of a procedural macro parser body
+pub enum MetaAttribute {
+    KeyVal(String, String),
+    Flag(String),
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn execute_rust_task(ctx: *mut Context) -> i32 {
-    let result = catch_unwind(|| {
-        if ctx.is_null() { return -1; }
-        let safe_ctx = &*ctx;
-        (safe_ctx.callback)(safe_ctx.user_data, 200);
-        0
-    });
+pub struct CustomMacroInput {
+    pub target_ident: String,
+    pub attributes: Vec<MetaAttribute>,
+}
 
-    result.unwrap_or(-1) // Catch panics gracefully across FFI boundary
+impl CustomMacroInput {
+    pub fn parse_tokens(tokens: &[String]) -> Result<Self, &'static str> {
+        let mut iter = tokens.iter();
+        let target_ident = iter.next().ok_or("Missing target identifier")?.clone();
+        let mut attributes = Vec::new();
+
+        while let Some(tok) = iter.next() {
+            if tok.contains('=') {
+                let parts: Vec<&str> = tok.split('=').collect();
+                attributes.push(MetaAttribute::KeyVal(parts[0].to_string(), parts[1].to_string()));
+            } else {
+                attributes.push(MetaAttribute::Flag(tok.clone()));
+            }
+        }
+
+        Ok(Self { target_ident, attributes })
+    }
 }
