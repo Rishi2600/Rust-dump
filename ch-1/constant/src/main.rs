@@ -1,32 +1,21 @@
-use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::Arc;
+use std::os::raw::c_void;
+use std::panic::catch_unwind;
 
-pub struct RcuCell<T> {
-    ptr: AtomicPtr<T>,
+pub type NativeCallback = extern "C" fn(*const c_void, i32);
+
+pub struct Context {
+    pub callback: NativeCallback,
+    pub user_data: *const c_void,
 }
 
-impl<T> RcuCell<T> {
-    pub fn new(val: T) -> Self {
-        let heap_val = Box::into_raw(Box::new(val));
-        Self { ptr: AtomicPtr::new(heap_val) }
-    }
+#[no_mangle]
+pub unsafe extern "C" fn execute_rust_task(ctx: *mut Context) -> i32 {
+    let result = catch_unwind(|| {
+        if ctx.is_null() { return -1; }
+        let safe_ctx = &*ctx;
+        (safe_ctx.callback)(safe_ctx.user_data, 200);
+        0
+    });
 
-    pub fn read(&self) -> Arc<T> {
-        unsafe {
-            let raw = self.ptr.load(Ordering::Acquire);
-            // Re-create temporary Arc clone reference safely
-            let temp = Arc::from_raw(raw);
-            let clone = Arc::clone(&temp);
-            let _ = Arc::into_raw(temp); // Keep original pointer valid
-            clone
-        }
-    }
-
-    pub fn update(&self, new_val: T) {
-        let new_raw = Box::into_raw(Box::new(new_val));
-        let old_raw = self.ptr.swap(new_raw, Ordering::AcqRel);
-        unsafe {
-            let _ = Box::from_raw(old_raw); // Free old allocation safely
-        }
-    }
+    result.unwrap_or(-1) // Catch panics gracefully across FFI boundary
 }
