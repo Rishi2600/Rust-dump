@@ -1,40 +1,25 @@
-use std::sync::atomic::{AtomicPtr, Ordering};
-use std::thread_local;
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum State { Idle, Running, Stopped }
 
-pub struct HazardPointer {
-    ptr: AtomicPtr<()>,
-}
+pub struct Fsm<const CURRENT: State>;
 
-thread_local! {
-    static HAZARD_RESERVOIR: HazardPointer = HazardPointer {
-        ptr: AtomicPtr::new(std::ptr::null_mut()),
-    };
-}
-
-pub struct HpGuard<T> {
-    ptr: *mut T,
-}
-
-impl<T> HpGuard<T> {
-    pub fn protect(atomic: &AtomicPtr<T>) -> Option<Self> {
-        let ptr = atomic.load(Ordering::Relaxed);
-        HAZARD_RESERVOIR.with(|hp| {
-            hp.ptr.store(ptr as *mut (), Ordering::Release);
-        });
-
-        // Double check against racing deletion
-        if atomic.load(Ordering::Acquire) != ptr {
-            None
-        } else {
-            Some(HpGuard { ptr })
-        }
+impl Fsm<{ State::Idle }> {
+    pub fn start(self) -> Fsm<{ State::Running }> {
+        println!("Transition: Idle -> Running");
+        Fsm
     }
 }
 
-impl<T> Drop for HpGuard<T> {
-    fn drop(&mut self) {
-        HAZARD_RESERVOIR.with(|hp| {
-            hp.ptr.store(std::ptr::null_mut(), Ordering::Release);
-        });
+impl Fsm<{ State::Running }> {
+    pub fn stop(self) -> Fsm<{ State::Stopped }> {
+        println!("Transition: Running -> Stopped");
+        Fsm
     }
+}
+
+fn execute_fsm() {
+    let state = Fsm::<{ State::Idle }>;
+    let running = state.start();
+    let _stopped = running.stop();
+    // running.stop(); // Error! `running` value moved.
 }
