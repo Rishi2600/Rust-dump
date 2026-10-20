@@ -1,39 +1,33 @@
-use std::future::Future;
-use std::pin::Pin;
+use std::ptr::NonNull;
 
-type AsyncStep = Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), &'static str>> + Send>> + Send + Sync>;
-
-pub struct SagaCoordinator {
-    steps: Vec<AsyncStep>,
-    compensations: Vec<AsyncStep>,
+pub struct IntrusiveNode<T> {
+    pub next: Option<NonNull<IntrusiveNode<T>>>,
+    pub prev: Option<NonNull<IntrusiveNode<T>>>,
+    pub value: T,
 }
 
-impl SagaCoordinator {
+pub struct IntrusiveList<T> {
+    head: Option<NonNull<IntrusiveNode<T>>>,
+    tail: Option<NonNull<IntrusiveNode<T>>>,
+}
+
+impl<T> IntrusiveList<T> {
     pub fn new() -> Self {
-        Self { steps: Vec::new(), compensations: Vec::new() }
+        Self { head: None, tail: None }
     }
 
-    pub fn add_step<F, C>(&mut self, step: F, compensation: C)
-    where
-        F: Fn() -> Pin<Box<dyn Future<Output = Result<(), &'static str>> + Send>> + Send + Sync + 'static,
-        C: Fn() -> Pin<Box<dyn Future<Output = Result<(), &'static str>> + Send>> + Send + Sync + 'static,
-    {
-        self.steps.push(Box::new(step));
-        self.compensations.push(Box::new(compensation));
-    }
+    pub fn push_front(&mut self, node: &mut IntrusiveNode<T>) {
+        let node_ptr = NonNull::from(node);
+        unsafe {
+            (*node_ptr.as_ptr()).next = self.head;
+            (*node_ptr.as_ptr()).prev = None;
 
-    pub async fn execute(&self) -> Result<(), &'static str> {
-        let mut executed = 0;
-        for step in &self.steps {
-            if let Err(e) = step().await {
-                // Rollback executed steps in reverse
-                for rollback in self.compensations[..executed].iter().rev() {
-                    let _ = rollback().await;
-                }
-                return Err(e);
+            if let Some(head_ptr) = self.head {
+                (*head_ptr.as_ptr()).prev = Some(node_ptr);
+            } else {
+                self.tail = Some(node_ptr);
             }
-            executed += 1;
+            self.head = Some(node_ptr);
         }
-        Ok(())
     }
 }
