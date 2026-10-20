@@ -1,47 +1,40 @@
-use std::collections::VecDeque;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use std::marker::PhantomData;
+use std::mem;
 
-pub type TaskFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
-
-pub struct TaskQueue {
-    queue: Mutex<VecDeque<TaskFuture>>,
+#[repr(C, packed)]
+pub struct WireHeader {
+    pub magic: u16,
+    pub payload_len: u32,
 }
 
-impl TaskQueue {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self { queue: Mutex::new(VecDeque::new()) })
-    }
+pub struct Packet<'a, T> {
+    header: &'a WireHeader,
+    payload: &'a [u8],
+    _marker: PhantomData<T>,
+}
 
-    pub fn spawn<F>(&self, future: F)
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        self.queue.lock().unwrap().push_back(Box::pin(future));
-    }
-
-    pub fn run_next(self: &Arc<Self>) -> bool {
-        let mut task = match self.queue.lock().unwrap().pop_front() {
-            Some(t) => t,
-            None => return false,
-        };
-
-        let waker = dummy_waker();
-        let mut cx = Context::from_waker(&waker);
-        if let Poll::Pending = task.as_mut().poll(&mut cx) {
-            self.queue.lock().unwrap().push_back(task);
+impl<'a, T> Packet<'a, T> {
+    pub fn parse(buffer: &'a [u8]) -> Result<Self, &'static str> {
+        let header_size = mem::size_of::<WireHeader>();
+        if buffer.len() < header_size {
+            return Err("Buffer underflow");
         }
-        true
-    }
-}
 
-fn dummy_waker() -> Waker {
-    unsafe fn no_op(_: *const ()) {}
-    unsafe fn clone(_: *const ()) -> RawWaker { raw_waker() }
-    unsafe fn raw_waker() -> RawWaker {
-        RawWaker::new(std::ptr::null(), &RawWakerVTable::new(clone, no_op, no_op, no_op))
+        let header = unsafe { &*(buffer.as_ptr() as *const WireHeader) };
+        let payload_len = u32::from_be(header.payload_len) as usize;
+
+        if buffer.len() < header_size + payload_len {
+            return Err("Incomplete payload");
+        }
+
+        Ok(Self {
+            header,
+            payload: &buffer[header_size..header_size + payload_len],
+            _marker: PhantomData,
+        })
     }
-    unsafe { Waker::from_raw(raw_waker()) }
+
+    pub fn payload(&self) -> &'a [u8] {
+        self.payload
+    }
 }
