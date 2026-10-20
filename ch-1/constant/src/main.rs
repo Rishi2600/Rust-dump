@@ -1,33 +1,31 @@
-use std::ptr::NonNull;
+use std::cell::UnsafeCell;
+use std::marker::PhantomPinned;
+use std::pin::Pin;
 
-pub struct IntrusiveNode<T> {
-    pub next: Option<NonNull<IntrusiveNode<T>>>,
-    pub prev: Option<NonNull<IntrusiveNode<T>>>,
-    pub value: T,
+pub struct SelfRefBuffer {
+    data: String,
+    slice: UnsafeCell<*const str>,
+    _pin: PhantomPinned,
 }
 
-pub struct IntrusiveList<T> {
-    head: Option<NonNull<IntrusiveNode<T>>>,
-    tail: Option<NonNull<IntrusiveNode<T>>>,
-}
-
-impl<T> IntrusiveList<T> {
-    pub fn new() -> Self {
-        Self { head: None, tail: None }
+impl SelfRefBuffer {
+    pub fn new(text: &str) -> Pin<Box<Self>> {
+        let res = SelfRefBuffer {
+            data: text.to_string(),
+            slice: UnsafeCell::new(std::ptr::null()),
+            _pin: PhantomPinned,
+        };
+        let mut boxed = Box::pin(res);
+        
+        let self_ptr: *const str = &boxed.data;
+        unsafe {
+            let mut_ref = Pin::as_mut(&mut boxed);
+            *mut_ref.slice.get() = self_ptr;
+        }
+        boxed
     }
 
-    pub fn push_front(&mut self, node: &mut IntrusiveNode<T>) {
-        let node_ptr = NonNull::from(node);
-        unsafe {
-            (*node_ptr.as_ptr()).next = self.head;
-            (*node_ptr.as_ptr()).prev = None;
-
-            if let Some(head_ptr) = self.head {
-                (*head_ptr.as_ptr()).prev = Some(node_ptr);
-            } else {
-                self.tail = Some(node_ptr);
-            }
-            self.head = Some(node_ptr);
-        }
+    pub fn get_borrowed<'a>(self: &'a Pin<Box<Self>>) -> &'a str {
+        unsafe { &**self.slice.get() }
     }
 }
