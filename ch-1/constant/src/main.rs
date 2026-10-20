@@ -1,36 +1,39 @@
-use std::cell::UnsafeCell;
-use std::mem;
+use std::future::Future;
+use std::pin::Pin;
 
-pub struct RegionArena {
-    buffer: UnsafeCell<Vec<u8>>,
-    offset: UnsafeCell<usize>,
+type AsyncStep = Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), &'static str>> + Send>> + Send + Sync>;
+
+pub struct SagaCoordinator {
+    steps: Vec<AsyncStep>,
+    compensations: Vec<AsyncStep>,
 }
 
-impl RegionArena {
-    pub fn with_capacity(cap: usize) -> Self {
-        Self {
-            buffer: UnsafeCell::new(Vec::with_capacity(cap)),
-            offset: UnsafeCell::new(0),
-        }
+impl SagaCoordinator {
+    pub fn new() -> Self {
+        Self { steps: Vec::new(), compensations: Vec::new() }
     }
 
-    pub fn alloc<T>(&self, val: T) -> &mut T {
-        unsafe {
-            let buffer = &mut *self.buffer.get();
-            let offset = &mut *self.offset.get();
-            
-            let align = mem::align_of::<T>();
-            let padding = (align - (*offset % align)) % align;
-            let size = mem::size_of::<T>();
+    pub fn add_step<F, C>(&mut self, step: F, compensation: C)
+    where
+        F: Fn() -> Pin<Box<dyn Future<Output = Result<(), &'static str>> + Send>> + Send + Sync + 'static,
+        C: Fn() -> Pin<Box<dyn Future<Output = Result<(), &'static str>> + Send>> + Send + Sync + 'static,
+    {
+        self.steps.push(Box::new(step));
+        self.compensations.push(Box::new(compensation));
+    }
 
-            if *offset + padding + size > buffer.capacity() {
-                buffer.reserve(size + padding);
+    pub async fn execute(&self) -> Result<(), &'static str> {
+        let mut executed = 0;
+        for step in &self.steps {
+            if let Err(e) = step().await {
+                // Rollback executed steps in reverse
+                for rollback in self.compensations[..executed].iter().rev() {
+                    let _ = rollback().await;
+                }
+                return Err(e);
             }
-
-            let ptr = buffer.as_mut_ptr().add(*offset + padding) as *mut T;
-            ptr.write(val);
-            *offset += padding + size;
-            &mut *ptr
+            executed += 1;
         }
+        Ok(())
     }
 }
