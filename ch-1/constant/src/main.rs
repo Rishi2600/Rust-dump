@@ -1,10 +1,5 @@
-pub struct PackedHeader(u16);
+use std::cell::RefCell;
 
-impl PackedHeader {
-    pub fn get_flags(&self) -> u8 {
-        (self.0 & 0x00FF) as u8
-    }
-    pub fn set_flags(&mut self, val: u8) {
-        self.0 = (self.0 & 0xFF00) | (val as u16);
-    }
+thread_local! {
+    static TRANSACTION_CONTEXT: RefCell<Option<String>> = RefCell::new(None);
 }
