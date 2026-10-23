@@ -1,10 +1,11 @@
-pub struct NodeId(pub usize);
-
-pub struct ArenaNode<T> {
-    pub data: T,
-    pub edges: Vec<NodeId>,
+pub struct ScopeGuard<F: FnOnce()> {
+    cleanup: Option<F>,
 }
 
-pub struct GraphArena<T> {
-    pub nodes: Vec<ArenaNode<T>>,
+impl<F: FnOnce()> Drop for ScopeGuard<F> {
+    fn drop(&mut self) {
+        if let Some(f) = self.cleanup.take() {
+            f();
+        }
+    }
 }
