@@ -1,7 +1,6 @@
-pub trait Middleware {
-    fn handle<'a>(&self, req: &'a str) -> &'a str;
-}
+use std::sync::{Mutex, Condvar};
 
-pub struct Chain {
-    handlers: Vec<Box<dyn Middleware>>,
+pub struct Semaphore {
+    permits: Mutex<usize>,
+    condvar: Condvar,
 }
