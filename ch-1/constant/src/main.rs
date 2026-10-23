@@ -1,29 +1,54 @@
-// Representative structural pattern of a procedural macro parser body
-pub enum MetaAttribute {
-    KeyVal(String, String),
-    Flag(String),
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::ptr;
+
+struct Node<T> {
+    data: T,
+    next: *mut Node<T>,
 }
 
-pub struct CustomMacroInput {
-    pub target_ident: String,
-    pub attributes: Vec<MetaAttribute>,
+pub struct TreiberStack<T> {
+    head: AtomicPtr<Node<T>>,
 }
 
-impl CustomMacroInput {
-    pub fn parse_tokens(tokens: &[String]) -> Result<Self, &'static str> {
-        let mut iter = tokens.iter();
-        let target_ident = iter.next().ok_or("Missing target identifier")?.clone();
-        let mut attributes = Vec::new();
+impl<T> TreiberStack<T> {
+    pub fn new() -> Self {
+        Self { head: AtomicPtr::new(ptr::null_mut()) }
+    }
 
-        while let Some(tok) = iter.next() {
-            if tok.contains('=') {
-                let parts: Vec<&str> = tok.split('=').collect();
-                attributes.push(MetaAttribute::KeyVal(parts[0].to_string(), parts[1].to_string()));
-            } else {
-                attributes.push(MetaAttribute::Flag(tok.clone()));
+    pub fn push(&self, data: T) {
+        let new_node = Box::into_raw(Box::new(Node { data, next: ptr::null_mut() }));
+        let mut old_head = self.head.load(Ordering::Relaxed);
+        loop {
+            unsafe { (*new_node).next = old_head; }
+            match self.head.compare_exchange_weak(
+                old_head,
+                new_node,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(current) => old_head = current,
             }
         }
+    }
 
-        Ok(Self { target_ident, attributes })
+    pub fn pop(&self) -> Option<T> {
+        let mut old_head = self.head.load(Ordering::Acquire);
+        loop {
+            if old_head.is_null() { return None; }
+            let next = unsafe { (*old_head).next };
+            match self.head.compare_exchange_weak(
+                old_head,
+                next,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    let boxed = unsafe { Box::from_raw(old_head) };
+                    return Some(boxed.data);
+                }
+                Err(current) => old_head = current,
+            }
+        }
     }
 }
