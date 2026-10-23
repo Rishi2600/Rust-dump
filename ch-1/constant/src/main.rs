@@ -1,19 +1,25 @@
-pub type ParseResult<'a, T> = Result<(&'a [u8], T), &'static str>;
+pub struct Disconnected;
+pub struct Connected;
+pub struct Authenticated;
 
-pub trait Parser<'a, T> {
-    fn parse(&self, input: &'a [u8]) -> ParseResult<'a, T>;
+pub struct Session<State> {
+    token: String,
+    _state: State,
 }
 
-struct TagParser<'a> {
-    expected: &'a [u8],
+impl Session<Disconnected> {
+    pub fn new() -> Self {
+        Self { token: String::new(), _state: Disconnected }
+    }
+
+    pub fn connect(self, endpoint: &str) -> Session<Connected> {
+        println!("Connecting to {}", endpoint);
+        Session { token: self.token, _state: Connected }
+    }
 }
 
-impl<'a> Parser<'a, ()> for TagParser<'a> {
-    fn parse(&self, input: &'a [u8]) -> ParseResult<'a, ()> {
-        if input.starts_with(self.expected) {
-            Ok((&input[self.expected.len()..], ()))
-        } else {
-            Err("Tag mismatch")
-        }
+impl Session<Connected> {
+    pub fn authenticate(self, api_key: &str) -> Session<Authenticated> {
+        Session { token: api_key.to_string(), _state: Authenticated }
     }
 }
