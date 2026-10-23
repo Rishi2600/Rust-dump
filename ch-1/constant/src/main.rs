@@ -1,25 +1,23 @@
-pub struct Disconnected;
-pub struct Connected;
-pub struct Authenticated;
+use std::cell::Cell;
+use std::ptr::NonNull;
 
-pub struct Session<State> {
-    token: String,
-    _state: State,
+struct RcBox<T> {
+    value: T,
+    strong: Cell<usize>,
+    weak: Cell<usize>,
 }
 
-impl Session<Disconnected> {
-    pub fn new() -> Self {
-        Self { token: String::new(), _state: Disconnected }
-    }
-
-    pub fn connect(self, endpoint: &str) -> Session<Connected> {
-        println!("Connecting to {}", endpoint);
-        Session { token: self.token, _state: Connected }
-    }
+pub struct CustomRc<T> {
+    ptr: NonNull<RcBox<T>>,
 }
 
-impl Session<Connected> {
-    pub fn authenticate(self, api_key: &str) -> Session<Authenticated> {
-        Session { token: api_key.to_string(), _state: Authenticated }
+impl<T> CustomRc<T> {
+    pub fn new(value: T) -> Self {
+        let boxed = Box::new(RcBox {
+            value,
+            strong: Cell::new(1),
+            weak: Cell::new(1),
+        });
+        Self { ptr: NonNull::new(Box::into_raw(boxed)).unwrap() }
     }
 }
