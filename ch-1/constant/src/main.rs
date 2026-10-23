@@ -1,23 +1,21 @@
-use std::cell::Cell;
-use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-struct RcBox<T> {
-    value: T,
-    strong: Cell<usize>,
-    weak: Cell<usize>,
+#[derive(Clone)]
+pub struct CancellationToken {
+    cancelled: Arc<AtomicBool>,
 }
 
-pub struct CustomRc<T> {
-    ptr: NonNull<RcBox<T>>,
-}
+impl CancellationToken {
+    pub fn new() -> Self {
+        Self { cancelled: Arc::new(AtomicBool::new(false)) }
+    }
 
-impl<T> CustomRc<T> {
-    pub fn new(value: T) -> Self {
-        let boxed = Box::new(RcBox {
-            value,
-            strong: Cell::new(1),
-            weak: Cell::new(1),
-        });
-        Self { ptr: NonNull::new(Box::into_raw(boxed)).unwrap() }
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
     }
 }
