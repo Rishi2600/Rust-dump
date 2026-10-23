@@ -1,6 +1,5 @@
-use std::sync::{Mutex, Condvar};
+use std::cell::UnsafeCell;
 
-pub struct Semaphore {
-    permits: Mutex<usize>,
-    condvar: Condvar,
+pub struct StringInterner {
+    buffer: UnsafeCell<Vec<u8>>,
 }
