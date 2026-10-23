@@ -1,21 +1,22 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::ptr;
 
-#[derive(Clone)]
-pub struct CancellationToken {
-    cancelled: Arc<AtomicBool>,
+#[repr(transparent)]
+pub struct VolatileReg<T> {
+    value: T,
 }
 
-impl CancellationToken {
-    pub fn new() -> Self {
-        Self { cancelled: Arc::new(AtomicBool::new(false)) }
+impl<T> VolatileReg<T> {
+    pub unsafe fn read(&self) -> T
+    where
+        T: Copy,
+    {
+        ptr::read_volatile(&self.value)
     }
 
-    pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
-    }
-
-    pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Relaxed)
+    pub unsafe fn write(&mut self, val: T)
+    where
+        T: Copy,
+    {
+        ptr::write_volatile(&mut self.value, val);
     }
 }
