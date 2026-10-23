@@ -1,22 +1,17 @@
-use std::ptr;
+use std::sync::atomic::{AtomicIsize, Ordering};
 
-#[repr(transparent)]
-pub struct VolatileReg<T> {
-    value: T,
+pub struct ChaseLevDeque<T> {
+    head: AtomicIsize,
+    tail: AtomicIsize,
+    _marker: std::marker::PhantomData<T>,
 }
 
-impl<T> VolatileReg<T> {
-    pub unsafe fn read(&self) -> T
-    where
-        T: Copy,
-    {
-        ptr::read_volatile(&self.value)
-    }
-
-    pub unsafe fn write(&mut self, val: T)
-    where
-        T: Copy,
-    {
-        ptr::write_volatile(&mut self.value, val);
+impl<T> ChaseLevDeque<T> {
+    pub fn new() -> Self {
+        Self {
+            head: AtomicIsize::new(0),
+            tail: AtomicIsize::new(0),
+            _marker: std::marker::PhantomData,
+        }
     }
 }
