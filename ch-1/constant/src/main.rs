@@ -1,12 +1,10 @@
-use std::marker::PhantomData;
+pub struct NodeId(pub usize);
 
-pub struct Quantity<const M: i32, const KG: i32, const S: i32> {
-    value: f64,
-    _marker: PhantomData<()>,
+pub struct ArenaNode<T> {
+    pub data: T,
+    pub edges: Vec<NodeId>,
 }
 
-impl<const M: i32, const KG: i32, const S: i32> Quantity<M, KG, S> {
-    pub fn new(val: f64) -> Self {
-        Self { value: val, _marker: PhantomData }
-    }
+pub struct GraphArena<T> {
+    pub nodes: Vec<ArenaNode<T>>,
 }
