@@ -1,7 +1,10 @@
-use std::pin::Pin;
-use std::task::{Context, Poll};
+pub struct PackedHeader(u16);
 
-pub trait AsyncWindowStream {
-    type Item;
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>>;
+impl PackedHeader {
+    pub fn get_flags(&self) -> u8 {
+        (self.0 & 0x00FF) as u8
+    }
+    pub fn set_flags(&mut self, val: u8) {
+        self.0 = (self.0 & 0xFF00) | (val as u16);
+    }
 }
