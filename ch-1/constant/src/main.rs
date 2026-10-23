@@ -1,18 +1,9 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::cell::UnsafeCell;
+use std::sync::{Mutex, Condvar};
+use std::collections::VecDeque;
 
-pub struct LazyInit<T> {
-    data: UnsafeCell<Option<T>>,
-    initialized: AtomicBool,
-}
-
-unsafe impl<T: Send + Sync> Sync for LazyInit<T> {}
-
-impl<T> LazyInit<T> {
-    pub const fn new() -> Self {
-        Self {
-            data: UnsafeCell::new(None),
-            initialized: AtomicBool::new(false),
-        }
-    }
+pub struct BoundedChannel<T> {
+    queue: Mutex<VecDeque<T>>,
+    space_available: Condvar,
+    item_available: Condvar,
+    capacity: usize,
 }
