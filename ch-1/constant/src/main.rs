@@ -1,11 +1,7 @@
-pub struct ScopeGuard<F: FnOnce()> {
-    cleanup: Option<F>,
+pub trait Middleware {
+    fn handle<'a>(&self, req: &'a str) -> &'a str;
 }
 
-impl<F: FnOnce()> Drop for ScopeGuard<F> {
-    fn drop(&mut self) {
-        if let Some(f) = self.cleanup.take() {
-            f();
-        }
-    }
+pub struct Chain {
+    handlers: Vec<Box<dyn Middleware>>,
 }
