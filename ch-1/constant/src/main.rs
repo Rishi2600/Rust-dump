@@ -1,24 +1,23 @@
-pub struct Idle;
-pub struct Active;
-
-pub struct Connection<State> {
-    id: usize,
-    _state: State,
+pub struct Lexer<'a> {
+    input: &'a [u8],
+    cursor: usize,
 }
 
-pub struct Pool {
-    conns: Vec<usize>,
-}
-
-impl Pool {
-    pub fn acquire(&mut self) -> Option<Connection<Idle>> {
-        self.conns.pop().map(|id| Connection { id, _state: Idle })
+impl<'a> Lexer<'a> {
+    pub fn new(input: &'a [u8]) -> Self {
+        Self { input, cursor: 0 }
     }
-}
 
-impl Connection<Idle> {
-    pub fn execute_query(self, _query: &str) -> Connection<Active> {
-        println!("Executing query on connection {}", self.id);
-        Connection { id: self.id, _state: Active }
+    pub fn next_token(&mut self) -> Option<&'a [u8]> {
+        while self.cursor < self.input.len() && self.input[self.cursor].is_ascii_whitespace() {
+            self.cursor += 1;
+        }
+        if self.cursor >= self.input.len() { return None; }
+
+        let start = self.cursor;
+        while self.cursor < self.input.len() && !self.input[self.cursor].is_ascii_whitespace() {
+            self.cursor += 1;
+        }
+        Some(&self.input[start..self.cursor])
     }
 }
