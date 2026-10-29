@@ -1,11 +1,12 @@
-pub struct OnPanic<F: FnOnce()> {
-    f: F,
+#[repr(transparent)]
+pub struct PeripheralRegister {
+    bits: u32,
 }
 
-impl<F: FnOnce()> Drop for OnPanic<F> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            (self.f)();
-        }
+impl PeripheralRegister {
+    pub unsafe fn modify_bit(&mut self, bit: u32, set: bool) {
+        let mut val = std::ptr::read_volatile(&self.bits);
+        if set { val |= 1 << bit; } else { val &= !(1 << bit); }
+        std::ptr::write_volatile(&mut self.bits, val);
     }
 }
