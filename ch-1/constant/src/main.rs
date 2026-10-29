@@ -1,7 +1,9 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::marker::PhantomData;
 
-pub struct SpscQueue<T, const CAP: usize> {
-    buffer: [std::cell::UnsafeCell<Option<T>>; CAP],
-    head: AtomicUsize,
-    tail: AtomicUsize,
+pub struct Meter;
+pub struct Second;
+
+pub struct Value<Unit> {
+    pub inner: f64,
+    _marker: PhantomData<Unit>,
 }
