@@ -1,20 +1,16 @@
-use std::any::{Any, TypeId};
-use std::collections::HashMap;
+pub struct Socket<const STATE: u8>;
 
-pub struct ExtensionRegistry {
-    extensions: HashMap<TypeId, Box<dyn Any>>,
+impl Socket<0> {
+    pub fn connect(self) -> Socket<1> {
+        Socket::<1>
+    }
 }
 
-impl ExtensionRegistry {
-    pub fn new() -> Self {
-        Self { extensions: HashMap::new() }
+impl Socket<1> {
+    pub fn send_data(self) -> Socket<1> {
+        self
     }
-
-    pub fn register<T: 'static>(&mut self, ext: T) {
-        self.extensions.insert(TypeId::of::<T>(), Box::new(ext));
-    }
-
-    pub fn get<T: 'static>(&self) -> Option<&T> {
-        self.extensions.get(&TypeId::of::<T>()).and_then(|b| b.downcast_ref())
+    pub fn disconnect(self) -> Socket<0> {
+        Socket::<0>
     }
 }
