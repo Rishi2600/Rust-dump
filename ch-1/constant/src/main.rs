@@ -1,23 +1,25 @@
-pub struct Lexer<'a> {
-    input: &'a [u8],
-    cursor: usize,
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+pub fn block_on<F: Future>(mut future: F) -> F::Output {
+    let mut boxed = Box::pin(future);
+    let waker = dummy_waker();
+    let mut cx = Context::from_waker(&waker);
+
+    loop {
+        match boxed.as_mut().poll(&mut cx) {
+            Poll::Ready(val) => return val,
+            Poll::Pending => std::thread::yield_now(),
+        }
+    }
 }
 
-impl<'a> Lexer<'a> {
-    pub fn new(input: &'a [u8]) -> Self {
-        Self { input, cursor: 0 }
+fn dummy_waker() -> Waker {
+    unsafe fn no_op(_: *const ()) {}
+    unsafe fn clone(_: *const ()) -> RawWaker { raw_waker() }
+    unsafe fn raw_waker() -> RawWaker {
+        RawWaker::new(std::ptr::null(), &RawWakerVTable::new(clone, no_op, no_op, no_op))
     }
-
-    pub fn next_token(&mut self) -> Option<&'a [u8]> {
-        while self.cursor < self.input.len() && self.input[self.cursor].is_ascii_whitespace() {
-            self.cursor += 1;
-        }
-        if self.cursor >= self.input.len() { return None; }
-
-        let start = self.cursor;
-        while self.cursor < self.input.len() && !self.input[self.cursor].is_ascii_whitespace() {
-            self.cursor += 1;
-        }
-        Some(&self.input[start..self.cursor])
-    }
+    unsafe { Waker::from_raw(raw_waker()) }
 }
