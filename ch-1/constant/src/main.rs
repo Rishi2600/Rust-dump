@@ -1,32 +1,24 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::cell::UnsafeCell;
+pub struct Idle;
+pub struct Active;
 
-pub struct Seqlock<T> {
-    sequence: AtomicUsize,
-    data: UnsafeCell<T>,
+pub struct Connection<State> {
+    id: usize,
+    _state: State,
 }
 
-unsafe impl<T: Send> Sync for Seqlock<T> {}
+pub struct Pool {
+    conns: Vec<usize>,
+}
 
-impl<T: Copy> Seqlock<T> {
-    pub fn new(val: T) -> Self {
-        Self { sequence: AtomicUsize::new(0), data: UnsafeCell::new(val) }
+impl Pool {
+    pub fn acquire(&mut self) -> Option<Connection<Idle>> {
+        self.conns.pop().map(|id| Connection { id, _state: Idle })
     }
+}
 
-    pub fn read(&self) -> T {
-        loop {
-            let s1 = self.sequence.load(Ordering::Acquire);
-            if s1 & 1 != 0 { continue; } // Writer is currently updating
-            let val = unsafe { *self.data.get() };
-            let s2 = self.sequence.load(Ordering::Acquire);
-            if s1 == s2 { return val; } // No concurrent write occurred
-        }
-    }
-
-    pub fn write(&self, val: T) {
-        let s = self.sequence.load(Ordering::Relaxed);
-        self.sequence.store(s.wrapping_add(1), Ordering::Release); // Odd = writing
-        unsafe { *self.data.get() = val; }
-        self.sequence.store(s.wrapping_add(2), Ordering::Release); // Even = done
+impl Connection<Idle> {
+    pub fn execute_query(self, _query: &str) -> Connection<Active> {
+        println!("Executing query on connection {}", self.id);
+        Connection { id: self.id, _state: Active }
     }
 }
