@@ -1,9 +1,5 @@
-use std::cell::RefCell;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
-thread_local! {
-    static REQUEST_ID: RefCell<u64> = RefCell::new(0);
-}
-
-pub fn set_request_id(id: u64) {
-    REQUEST_ID.with(|r| *r.borrow_mut() = id);
+pub struct HazardPointer {
+    ptr: AtomicPtr<()>,
 }
