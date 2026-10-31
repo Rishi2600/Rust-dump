@@ -1,4 +1,5 @@
-pub struct FileState<State> {
-    fd: i32,
-    _state: State,
+pub struct NodeIndex(usize);
+
+pub struct GraphArena<T> {
+    nodes: Vec<T>,
 }
