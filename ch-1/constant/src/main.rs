@@ -1,4 +1,5 @@
-#[repr(transparent)]
-pub struct Register {
-    val: u32,
+use std::cell::RefCell;
+
+thread_local! {
+    static CONTEXT: RefCell<Option<String>> = RefCell::new(None);
 }
