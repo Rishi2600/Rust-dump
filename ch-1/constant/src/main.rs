@@ -1,5 +1,4 @@
-use std::sync::atomic::{AtomicPtr, Ordering};
-
-pub struct HazardPointer {
-    ptr: AtomicPtr<()>,
+pub struct Http2Frame<'a> {
+    pub length: u32,
+    pub payload: &'a [u8],
 }
