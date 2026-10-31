@@ -1,5 +1,7 @@
-use std::cell::RefCell;
+use std::marker::PhantomPinned;
+use std::pin::Pin;
 
-thread_local! {
-    static CONTEXT: RefCell<Option<String>> = RefCell::new(None);
+pub struct SelfRef {
+    data: String,
+    _pin: PhantomPinned,
 }
