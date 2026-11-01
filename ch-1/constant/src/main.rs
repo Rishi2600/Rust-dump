@@ -1,10 +1,16 @@
-use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio::sync::mpsc;
 
-pub struct SpmcBroadcast<T, const CAP: usize> {
-    buffer: [UnsafeCell<MaybeUninit<T>>; CAP],
-    write_seq: AtomicUsize,
+pub enum ActorMessage {
+    SetValue(String),
+    GetVal(tokio::sync::oneshot::Sender<String>),
 }
 
-use std::mem::MaybeUninit;
-unsafe impl<T: Send, const CAP: usize> Sync for SpmcBroadcast<T, CAP> {}
+pub struct ActorHandle {
+    sender: mpsc::Sender<ActorMessage>,
+}
+
+impl ActorHandle {
+    pub async fn set_value(&self, val: String) {
+        let _ = self.sender.send(ActorMessage::SetValue(val)).await;
+    }
+}
