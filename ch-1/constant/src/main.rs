@@ -1,22 +1,27 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::cell::UnsafeCell;
+use std::mem;
 
-pub struct Seqlock<T> {
-    seq: AtomicUsize,
-    data: UnsafeCell<T>,
+pub struct Arena {
+    buffer: UnsafeCell<Vec<u8>>,
+    offset: UnsafeCell<usize>,
 }
 
-unsafe impl<T: Send> Sync for Seqlock<T> {}
+impl Arena {
+    pub fn new(capacity: usize) -> Self {
+        Self { buffer: UnsafeCell::new(Vec::with_capacity(capacity)), offset: UnsafeCell::new(0) }
+    }
 
-impl<T: Copy> Seqlock<T> {
-    pub fn new(val: T) -> Self { Self { seq: AtomicUsize::new(0), data: UnsafeCell::new(val) } }
-    pub fn read(&self) -> T {
-        loop {
-            let s1 = self.seq.load(Ordering::Acquire);
-            if s1 & 1 != 0 { continue; }
-            let val = unsafe { *self.data.get() };
-            let s2 = self.seq.load(Ordering::Acquire);
-            if s1 == s2 { return val; }
+    pub fn alloc<T>(&self, val: T) -> &mut T {
+        unsafe {
+            let buf = &mut *self.buffer.get();
+            let off = &mut *self.offset.get();
+            let align = mem::align_of::<T>();
+            let padding = (align - (*off % align)) % align;
+            let size = mem::size_of::<T>();
+            let ptr = buf.as_mut_ptr().add(*off + padding) as *mut T;
+            ptr.write(val);
+            *off += padding + size;
+            &mut *ptr
         }
     }
 }
