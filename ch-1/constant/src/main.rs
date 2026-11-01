@@ -1,14 +1,17 @@
-use std::ptr::NonNull;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex, Condvar};
 
-pub struct Node<T> {
-    pub next: Option<NonNull<Node<T>>>,
-    pub value: T,
+pub struct TaskPool<T> {
+    tasks: Mutex<VecDeque<T>>,
+    condvar: Condvar,
 }
 
-pub struct IntrusiveList<T> {
-    pub head: Option<NonNull<Node<T>>>,
-}
-
-impl<T> IntrusiveList<T> {
-    pub fn new() -> Self { Self { head: None } }
+impl<T> TaskPool<T> {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self { tasks: Mutex::new(VecDeque::new()), condvar: Condvar::new() })
+    }
+    pub fn push(&self, task: T) {
+        self.tasks.lock().unwrap().push_back(task);
+        self.condvar.notify_one();
+    }
 }
