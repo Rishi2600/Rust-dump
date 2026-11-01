@@ -1,11 +1,7 @@
-use std::ptr;
-
-#[repr(transparent)]
-pub struct VolatileReg<T> {
-    val: T,
+pub trait Middleware {
+    fn process<'a>(&self, input: &'a str) -> &'a str;
 }
 
-impl<T: Copy> VolatileReg<T> {
-    pub unsafe fn read(&self) -> T { ptr::read_volatile(&self.val) }
-    pub unsafe fn write(&mut self, val: T) { ptr::write_volatile(&mut self.val, val); }
+pub struct Engine {
+    handlers: Vec<Box<dyn Middleware>>,
 }
