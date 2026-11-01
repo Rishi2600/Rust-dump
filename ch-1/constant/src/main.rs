@@ -1,14 +1,12 @@
-pub struct WindowIter<'a, T> {
-    slice: &'a [T],
-    size: usize,
+pub struct Interner {
+    buffer: Vec<u8>,
 }
 
-impl<'a, T> Iterator for WindowIter<'a, T> {
-    type Item = &'a [T];
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.slice.len() < self.size { return None; }
-        let res = &self.slice[..self.size];
-        self.slice = &self.slice[1..];
-        Some(res)
+impl Interner {
+    pub fn new() -> Self { Self { buffer: Vec::new() } }
+    pub fn intern(&mut self, s: &str) -> &[u8] {
+        let start = self.buffer.len();
+        self.buffer.extend_from_slice(s.as_bytes());
+        &self.buffer[start..]
     }
 }
