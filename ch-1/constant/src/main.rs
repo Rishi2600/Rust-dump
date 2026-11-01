@@ -1,16 +1,9 @@
-use std::marker::PhantomData;
-use std::ops::Add;
+use std::cell::RefCell;
 
-pub struct Meters;
-pub struct Seconds;
-
-pub struct Quantity<Unit>(f64, PhantomData<Unit>);
-
-impl<Unit> Quantity<Unit> {
-    pub fn new(v: f64) -> Self { Self(v, PhantomData) }
+thread_local! {
+    static REQUEST_CONTEXT: RefCell<String> = RefCell::new(String::new());
 }
 
-impl<Unit> Add for Quantity<Unit> {
-    type Output = Self;
-    fn add(self, rhs: Self) -> Self::Output { Quantity(self.0 + rhs.0, PhantomData) }
+pub fn set_trace_id(id: &str) {
+    REQUEST_CONTEXT.with(|ctx| *ctx.borrow_mut() = id.to_string());
 }
