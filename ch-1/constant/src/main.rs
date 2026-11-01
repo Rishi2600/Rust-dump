@@ -1,17 +1,17 @@
-use std::marker::PhantomPinned;
-use std::pin::Pin;
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::Arc;
 
-pub struct SelfRef {
-    data: String,
-    ptr: *const String,
-    _pin: PhantomPinned,
+pub struct RcuCell<T> {
+    ptr: AtomicPtr<T>,
 }
 
-impl SelfRef {
-    pub fn new(text: &str) -> Pin<Box<Self>> {
-        let mut boxed = Box::pin(SelfRef { data: text.to_string(), ptr: std::ptr::null(), _pin: PhantomPinned });
-        let p = &boxed.data as *const String;
-        unsafe { Pin::as_mut(&mut boxed).ptr = p; }
-        boxed
+impl<T> RcuCell<T> {
+    pub fn new(val: T) -> Self {
+        Self { ptr: AtomicPtr::new(Box::into_raw(Box::new(val))) }
+    }
+    pub fn update(&self, new_val: T) {
+        let new_ptr = Box::into_raw(Box::new(new_val));
+        let old_ptr = self.ptr.swap(new_ptr, Ordering::AcqRel);
+        unsafe { let _ = Box::from_raw(old_ptr); }
     }
 }
