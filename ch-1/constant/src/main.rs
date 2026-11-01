@@ -1,27 +1,23 @@
-use std::cell::UnsafeCell;
-use std::mem;
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::ptr;
 
-pub struct Arena {
-    buffer: UnsafeCell<Vec<u8>>,
-    offset: UnsafeCell<usize>,
+struct Node<T> { data: T, next: *mut Node<T> }
+
+pub struct TreiberStack<T> {
+    head: AtomicPtr<Node<T>>,
 }
 
-impl Arena {
-    pub fn new(capacity: usize) -> Self {
-        Self { buffer: UnsafeCell::new(Vec::with_capacity(capacity)), offset: UnsafeCell::new(0) }
-    }
-
-    pub fn alloc<T>(&self, val: T) -> &mut T {
-        unsafe {
-            let buf = &mut *self.buffer.get();
-            let off = &mut *self.offset.get();
-            let align = mem::align_of::<T>();
-            let padding = (align - (*off % align)) % align;
-            let size = mem::size_of::<T>();
-            let ptr = buf.as_mut_ptr().add(*off + padding) as *mut T;
-            ptr.write(val);
-            *off += padding + size;
-            &mut *ptr
+impl<T> TreiberStack<T> {
+    pub fn new() -> Self { Self { head: AtomicPtr::new(ptr::null_mut()) } }
+    pub fn push(&self, data: T) {
+        let new_node = Box::into_raw(Box::new(Node { data, next: ptr::null_mut() }));
+        let mut old = self.head.load(Ordering::Relaxed);
+        loop {
+            unsafe { (*new_node).next = old; }
+            match self.head.compare_exchange_weak(old, new_node, Ordering::Release, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(current) => old = current,
+            }
         }
     }
 }
