@@ -1,12 +1,5 @@
-pub struct Interner {
-    buffer: Vec<u8>,
-}
+pub struct StateMachine<const STATE: usize>;
 
-impl Interner {
-    pub fn new() -> Self { Self { buffer: Vec::new() } }
-    pub fn intern(&mut self, s: &str) -> &[u8] {
-        let start = self.buffer.len();
-        self.buffer.extend_from_slice(s.as_bytes());
-        &self.buffer[start..]
-    }
+impl StateMachine<0> {
+    pub fn next(self) -> StateMachine<1> { StateMachine::<1> }
 }
