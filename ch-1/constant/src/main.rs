@@ -1,9 +1,14 @@
-use std::cell::RefCell;
+use std::ptr::NonNull;
 
-thread_local! {
-    static REQUEST_CONTEXT: RefCell<String> = RefCell::new(String::new());
+pub struct Node<T> {
+    pub next: Option<NonNull<Node<T>>>,
+    pub value: T,
 }
 
-pub fn set_trace_id(id: &str) {
-    REQUEST_CONTEXT.with(|ctx| *ctx.borrow_mut() = id.to_string());
+pub struct IntrusiveList<T> {
+    pub head: Option<NonNull<Node<T>>>,
+}
+
+impl<T> IntrusiveList<T> {
+    pub fn new() -> Self { Self { head: None } }
 }
