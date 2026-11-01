@@ -1,17 +1,11 @@
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, Condvar};
+use std::ptr;
 
-pub struct TaskPool<T> {
-    tasks: Mutex<VecDeque<T>>,
-    condvar: Condvar,
+#[repr(transparent)]
+pub struct VolatileReg<T> {
+    val: T,
 }
 
-impl<T> TaskPool<T> {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self { tasks: Mutex::new(VecDeque::new()), condvar: Condvar::new() })
-    }
-    pub fn push(&self, task: T) {
-        self.tasks.lock().unwrap().push_back(task);
-        self.condvar.notify_one();
-    }
+impl<T: Copy> VolatileReg<T> {
+    pub unsafe fn read(&self) -> T { ptr::read_volatile(&self.val) }
+    pub unsafe fn write(&mut self, val: T) { ptr::write_volatile(&mut self.val, val); }
 }
