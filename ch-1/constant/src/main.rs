@@ -1,18 +1,22 @@
-use std::any::{Any, TypeId};
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::UnsafeCell;
 
-#[derive(Default)]
-pub struct Container {
-    services: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+pub struct Seqlock<T> {
+    seq: AtomicUsize,
+    data: UnsafeCell<T>,
 }
 
-impl Container {
-    pub fn register<T: Send + Sync + 'static>(&mut self, service: T) {
-        self.services.insert(TypeId::of::<T>(), Arc::new(service));
-    }
+unsafe impl<T: Send> Sync for Seqlock<T> {}
 
-    pub fn resolve<T: Send + Sync + 'static>(&self) -> Option<Arc<T>> {
-        self.services.get(&TypeId::of::<T>()).and_then(|b| b.clone().downcast::<T>().ok())
+impl<T: Copy> Seqlock<T> {
+    pub fn new(val: T) -> Self { Self { seq: AtomicUsize::new(0), data: UnsafeCell::new(val) } }
+    pub fn read(&self) -> T {
+        loop {
+            let s1 = self.seq.load(Ordering::Acquire);
+            if s1 & 1 != 0 { continue; }
+            let val = unsafe { *self.data.get() };
+            let s2 = self.seq.load(Ordering::Acquire);
+            if s1 == s2 { return val; }
+        }
     }
 }
