@@ -1,18 +1,18 @@
-pub struct ScopeGuard<F: FnOnce()> {
-    cleanup: Option<F>,
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+#[derive(Default)]
+pub struct Container {
+    services: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
 }
 
-impl<F: FnOnce()> Drop for ScopeGuard<F> {
-    fn drop(&mut self) {
-        if let Some(f) = self.cleanup.take() {
-            f();
-        }
+impl Container {
+    pub fn register<T: Send + Sync + 'static>(&mut self, service: T) {
+        self.services.insert(TypeId::of::<T>(), Arc::new(service));
     }
-}
 
-pub fn with_rollback<F, R>(mut action: F) -> R 
-where F: FnMut() -> R,
-{
-    let _guard = ScopeGuard { cleanup: Some(|| println!("Rolling back transaction due to panic!")) };
-    action()
+    pub fn resolve<T: Send + Sync + 'static>(&self) -> Option<Arc<T>> {
+        self.services.get(&TypeId::of::<T>()).and_then(|b| b.clone().downcast::<T>().ok())
+    }
 }
