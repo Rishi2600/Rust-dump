@@ -1,11 +1,17 @@
-macro_rules! bitfield {
-    ($name:ident { $($field:ident : $shift:expr),* }) => {
-        pub struct $name(pub u32);
-        impl $name {
-            $(
-                pub fn $field(&self) -> u32 { (self.0 >> $shift) & 0x1 }
-            )*
-        }
-    };
+use std::marker::PhantomPinned;
+use std::pin::Pin;
+
+pub struct SelfRef {
+    data: String,
+    ptr: *const String,
+    _pin: PhantomPinned,
 }
-bitfield!(StatusFlags { ready: 0, error: 1 });
+
+impl SelfRef {
+    pub fn new(text: &str) -> Pin<Box<Self>> {
+        let mut boxed = Box::pin(SelfRef { data: text.to_string(), ptr: std::ptr::null(), _pin: PhantomPinned });
+        let p = &boxed.data as *const String;
+        unsafe { Pin::as_mut(&mut boxed).ptr = p; }
+        boxed
+    }
+}
