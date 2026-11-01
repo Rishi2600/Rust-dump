@@ -1,8 +1,14 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::cell::UnsafeCell;
-
-pub struct LazyCell<T> {
-    value: UnsafeCell<Option<T>>,
-    init: AtomicBool,
+pub struct WindowIter<'a, T> {
+    slice: &'a [T],
+    size: usize,
 }
-unsafe impl<T: Send + Sync> Sync for LazyCell<T> {}
+
+impl<'a, T> Iterator for WindowIter<'a, T> {
+    type Item = &'a [T];
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.slice.len() < self.size { return None; }
+        let res = &self.slice[..self.size];
+        self.slice = &self.slice[1..];
+        Some(res)
+    }
+}
