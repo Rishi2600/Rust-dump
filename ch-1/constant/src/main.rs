@@ -1,7 +1,27 @@
-use std::marker::PhantomPinned;
-use std::pin::Pin;
+use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
-pub struct SelfRef {
-    data: String,
-    _pin: PhantomPinned,
+pub struct RingBuffer<T, const CAP: usize> {
+    buffer: [UnsafeCell<Option<T>>; CAP],
+    head: AtomicUsize,
+    tail: AtomicUsize,
+}
+
+unsafe impl<T: Send, const CAP: usize> Sync for RingBuffer<T, CAP> {}
+
+impl<T, const CAP: usize> RingBuffer<T, CAP> {
+    pub fn new() -> Arc<Self> {
+        let buffer = std::array::from_fn(|_| UnsafeCell::new(None));
+        Arc::new(Self { buffer, head: AtomicUsize::new(0), tail: AtomicUsize::new(0) })
+    }
+
+    pub fn push(&self, value: T) -> Result<(), T> {
+        let head = self.head.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Acquire);
+        if head.wrapping_add(1) % CAP == tail % CAP { return Err(value); }
+        unsafe { *self.buffer[head % CAP].get() = Some(value); }
+        self.head.store(head.wrapping_add(1), Ordering::Release);
+        Ok(())
+    }
 }
