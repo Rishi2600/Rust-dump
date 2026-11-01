@@ -1,23 +1,16 @@
-use std::sync::atomic::{AtomicPtr, Ordering};
-use std::ptr;
+use std::marker::PhantomData;
+use std::ops::Add;
 
-struct Node<T> { data: T, next: *mut Node<T> }
+pub struct Meters;
+pub struct Seconds;
 
-pub struct TreiberStack<T> {
-    head: AtomicPtr<Node<T>>,
+pub struct Quantity<Unit>(f64, PhantomData<Unit>);
+
+impl<Unit> Quantity<Unit> {
+    pub fn new(v: f64) -> Self { Self(v, PhantomData) }
 }
 
-impl<T> TreiberStack<T> {
-    pub fn new() -> Self { Self { head: AtomicPtr::new(ptr::null_mut()) } }
-    pub fn push(&self, data: T) {
-        let new_node = Box::into_raw(Box::new(Node { data, next: ptr::null_mut() }));
-        let mut old = self.head.load(Ordering::Relaxed);
-        loop {
-            unsafe { (*new_node).next = old; }
-            match self.head.compare_exchange_weak(old, new_node, Ordering::Release, Ordering::Relaxed) {
-                Ok(_) => break,
-                Err(current) => old = current,
-            }
-        }
-    }
+impl<Unit> Add for Quantity<Unit> {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self::Output { Quantity(self.0 + rhs.0, PhantomData) }
 }
