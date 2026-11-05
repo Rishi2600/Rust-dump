@@ -1,10 +1,10 @@
-macro_rules! safe_ffi_call {
-    ($call:expr) => {
-        std::panic::catch_unwind(|| {
-            $call
-        }).unwrap_or_else(|_| {
-            eprintln!("FFI panic caught safely");
-            -1
-        })
+macro_rules! time_it {
+    ($name:expr, $block:block) => {
+        {
+            let start = std::time::Instant::now();
+            let res = $block;
+            println!("Benchmark [{}] took: {:?}", $name, start.elapsed());
+            res
+        }
     };
 }
