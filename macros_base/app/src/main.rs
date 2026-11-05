@@ -1,5 +1,6 @@
-macro_rules! calculate {
-    ($val:expr) => { $val };
-    ($val:expr + $($rest:tt)*) => { $val + calculate!($($rest)*) };
-    ($val:expr * $($rest:tt)*) => { $val * calculate!($($rest)*) };
+macro_rules! html {
+    ($tag:ident [ $($child:tt)* ]) => {
+        format!("<{0}>{1}</{0}>", stringify!($tag), html!(@inner $($child)*))
+    };
+    (@inner $text:expr) => { $text };
 }
