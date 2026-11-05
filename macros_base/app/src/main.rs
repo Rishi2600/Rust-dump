@@ -1,16 +1,9 @@
-macro_rules! quick_vec {
-    ( $( $x:expr ),* $(,)? ) => {
-        {
-            let mut temp_vec = Vec::new();
-            $(
-                temp_vec.push($x);
-            )*
-            temp_vec
-        }
+macro_rules! munch_tokens {
+    // Base case
+    () => {};
+    // Recursive case: consume first token and process the rest
+    ($head:expr, $($tail:tt)*) => {
+        println!("Munched token: {}", $head);
+        munch_tokens!($($tail)*);
     };
-}
-
-fn main() {
-    let numbers = quick_vec![1, 2, 3, 4];
-    println!("{:?}", numbers);
 }
