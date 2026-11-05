@@ -1,10 +1,10 @@
 /*
 use proc_macro::TokenStream;
 
-#[proc_macro_attribute]
-pub fn trace_execution(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Wrap item function token stream with timing logic
-    item
+#[proc_macro]
+pub fn compile_sql(input: TokenStream) -> TokenStream {
+    // Validate SQL syntax at compile time and emit optimized code
+    input
 }
 */
-pub struct ProcMacroAttributePlaceholder;
+pub struct FunctionLikeMacroPlaceholder;
