@@ -1,6 +1,10 @@
-macro_rules! html {
-    ($tag:ident [ $($child:tt)* ]) => {
-        format!("<{0}>{1}</{0}>", stringify!($tag), html!(@inner $($child)*))
+macro_rules! impl_getters_setters {
+    ($struct_name:ident { $($field:ident : $ty:ty),* $(,)? }) => {
+        impl $struct_name {
+            $(
+                pub fn $field(&self) -> &$ty { &self.$field }
+                pub fn set_$field(&mut self, val: $ty) { self.$field = val; }
+            )*
+        }
     };
-    (@inner $text:expr) => { $text };
 }
