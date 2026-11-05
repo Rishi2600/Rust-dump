@@ -1,10 +1,8 @@
-macro_rules! validate_fields {
-    ($self:ident, $( $field:ident > $val:expr ),* $(,)?) => {
-        $(
-            if $self.$field <= $val {
-                return Err(concat!(stringify!($field), " must be greater than ", stringify!($val)));
-            }
-        )*
-        Ok(())
+macro_rules! dispatch_commands {
+    ($cmd:expr, { $( $name:pat => $handler:expr ),* $(,)? }) => {
+        match $cmd.as_str() {
+            $( $name => $handler(), )*
+            _ => println!("Unknown command"),
+        }
     };
 }
