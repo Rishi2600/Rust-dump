@@ -1,9 +1,13 @@
-macro_rules! impl_getters_setters {
-    ($struct_name:ident { $($field:ident : $ty:ty),* $(,)? }) => {
-        impl $struct_name {
+macro_rules! simple_builder {
+    ($name:ident { $($field:ident : $ty:ty),* $(,)? }) => {
+        pub struct $name { $($field: Option<$ty>,)* }
+        impl $name {
+            pub fn new() -> Self { Self { $($field: None,)* } }
             $(
-                pub fn $field(&self) -> &$ty { &self.$field }
-                pub fn set_$field(&mut self, val: $ty) { self.$field = val; }
+                pub fn $field(mut self, val: $ty) -> Self {
+                    self.$field = Some(val);
+                    self
+                }
             )*
         }
     };
