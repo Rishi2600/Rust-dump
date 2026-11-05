@@ -1,12 +1,8 @@
-macro_rules! mock_repo {
-    ($trait_name:ident, $mock_name:ident, { $($fn_name:ident -> $ret:ty),* }) => {
-        pub struct $mock_name;
-        impl $trait_name for $mock_name {
-            $(
-                fn $fn_name(&self) -> $ret {
-                    unimplemented!(stringify!($fn_name mocked))
-                }
-            )*
+macro_rules! impl_bitflags {
+    ($struct_name:ident) => {
+        impl std::ops::BitOr for $struct_name {
+            type Output = Self;
+            fn bitor(self, rhs: Self) -> Self { Self(self.0 | rhs.0) }
         }
     };
 }
