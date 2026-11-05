@@ -1,8 +1,8 @@
-macro_rules! match_range {
-    ($val:expr, $( $start:expr ..= $end:expr => $handler:expr ),* $(,)? ) => {
-        match $val {
-            $( x if x >= $start && x <= $end => $handler, )*
-            _ => panic!("Value out of range"),
+macro_rules! lazy_singleton {
+    ($name:ident : $ty:ty = $init:expr) => {
+        pub fn $name() -> &'static $ty {
+            static INSTANCE: std::sync::OnceLock<$ty> = std::sync::OnceLock::new();
+            INSTANCE.get_or_init(|| $init)
         }
     };
 }
