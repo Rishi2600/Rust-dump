@@ -1,9 +1,8 @@
-macro_rules! vec_with_capacity {
-    ($cap:expr, $( $x:expr ),* $(,)?) => {
-        {
-            let mut v = Vec::with_capacity($cap);
-            $( v.push($x); )*
-            v
+macro_rules! state_machine {
+    ($curr:expr => { $($from:ident => $to:ident),* $(,)? }) => {
+        match $curr {
+            $( (stringify!($from), stringify!($to)) => true, )*
+            _ => false,
         }
     };
 }
