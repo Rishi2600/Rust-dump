@@ -1,7 +1,8 @@
-macro_rules! assert_with_context {
-    ($cond:expr, $($arg:tt)*) => {
-        if !$cond {
-            panic!("Assertion failed: {}\nContext: {}", stringify!($cond), format!($($arg)*));
+macro_rules! define_app_errors {
+    ($($err_name:ident),* $(,)?) => {
+        #[derive(Debug)]
+        pub enum AppError {
+            $( $err_name(String), )*
         }
     };
 }
