@@ -1,9 +1,9 @@
-macro_rules! json_map {
-    ($( $key:expr => $val:expr ),* $(,)?) => {
+macro_rules! vec_with_capacity {
+    ($cap:expr, $( $x:expr ),* $(,)?) => {
         {
-            let mut map = std::collections::HashMap::new();
-            $( map.insert($key.to_string(), $val.to_string()); )*
-            map
+            let mut v = Vec::with_capacity($cap);
+            $( v.push($x); )*
+            v
         }
     };
 }
