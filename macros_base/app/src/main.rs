@@ -1,10 +1,6 @@
-/*
-use proc_macro::TokenStream;
-
-#[proc_macro]
-pub fn compile_sql(input: TokenStream) -> TokenStream {
-    // Validate SQL syntax at compile time and emit optimized code
-    input
+macro_rules! hygienic_var {
+    () => {
+        let x = 42; // 'x' is hygienic and isolated to macro expansion scope
+        println!("Hygienic x: {}", x);
+    };
 }
-*/
-pub struct FunctionLikeMacroPlaceholder;
