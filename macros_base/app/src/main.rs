@@ -1,11 +1,8 @@
-macro_rules! impl_enum_display {
-    ($enum_name:ident { $($variant:ident),* $(,)? }) => {
-        impl std::fmt::Display for $enum_name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                match self {
-                    $( $enum_name::$variant => write!(f, stringify!($variant)), )*
-                }
-            }
+macro_rules! match_range {
+    ($val:expr, $( $start:expr ..= $end:expr => $handler:expr ),* $(,)? ) => {
+        match $val {
+            $( x if x >= $start && x <= $end => $handler, )*
+            _ => panic!("Value out of range"),
         }
     };
 }
