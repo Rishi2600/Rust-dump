@@ -1,10 +1,12 @@
-macro_rules! time_it {
-    ($name:expr, $block:block) => {
-        {
-            let start = std::time::Instant::now();
-            let res = $block;
-            println!("Benchmark [{}] took: {:?}", $name, start.elapsed());
-            res
+macro_rules! mock_repo {
+    ($trait_name:ident, $mock_name:ident, { $($fn_name:ident -> $ret:ty),* }) => {
+        pub struct $mock_name;
+        impl $trait_name for $mock_name {
+            $(
+                fn $fn_name(&self) -> $ret {
+                    unimplemented!(stringify!($fn_name mocked))
+                }
+            )*
         }
     };
 }
