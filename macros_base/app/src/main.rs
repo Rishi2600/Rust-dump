@@ -1,13 +1,17 @@
-#[proc_macro_derive(TrackMetrics)]
-pub fn derive_metrics(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    let name = input.ident;
+#[proc_macro_attribute]
+pub fn profile_latency(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input_fn = parse_macro_input!(item as syn::ItemFn);
+    let fn_name = input_fn.sig.ident.clone();
+    let block = input_fn.block;
+    let vis = input_fn.vis;
+    let sig = input_fn.sig;
 
     let expanded = quote! {
-        impl #name {
-            pub fn record_allocation(&self) {
-                println!("Metric: Allocated instance of {}", stringify!(#name));
-            }
+        #vis #sig {
+            let start = std::time::Instant::now();
+            let result = (|| { #block })();
+            println!("Function '{}' executed in {:?}", stringify!(#fn_name), start.elapsed());
+            result
         }
     };
     TokenStream::from(expanded)
