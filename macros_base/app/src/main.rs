@@ -1,12 +1,10 @@
 #[proc_macro]
-pub fn regex_pattern(input: TokenStream) -> TokenStream {
-    let pattern = input.to_string();
+pub fn embed_env(input: TokenStream) -> TokenStream {
+    let var_name = input.to_string().replace('"', "");
+    let val = std::env::var(&var_name).unwrap_or_else(|_| "DEFAULT_VAL".to_string());
+
     let expanded = quote! {
-        {
-            // Placeholder for pre-compiled regex engine instance
-            println!("Compiled static regex pattern: {}", #pattern);
-            true
-        }
+        #val
     };
     TokenStream::from(expanded)
 }
