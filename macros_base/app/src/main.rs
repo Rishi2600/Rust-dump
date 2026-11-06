@@ -1,12 +1,11 @@
 #[proc_macro]
-pub fn compile_sql(input: TokenStream) -> TokenStream {
-    let query_str = input.to_string();
-    // Validate SQL structure at compile time
+pub fn regex_pattern(input: TokenStream) -> TokenStream {
+    let pattern = input.to_string();
     let expanded = quote! {
         {
-            let query = #query_str;
-            println!("Executing validated SQL: {}", query);
-            query
+            // Placeholder for pre-compiled regex engine instance
+            println!("Compiled static regex pattern: {}", #pattern);
+            true
         }
     };
     TokenStream::from(expanded)
