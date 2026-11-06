@@ -1,8 +1,15 @@
 #[proc_macro]
-pub fn i18n_msg(input: TokenStream) -> TokenStream {
-    let key = input.to_string();
+pub fn compile_fsm(input: TokenStream) -> TokenStream {
+    let fsm_def = input.to_string();
     let expanded = quote! {
-        format!("Localized string for key: {}", #key)
+        pub struct GeneratedStateMachine {
+            definition: &'static str,
+        }
+        impl GeneratedStateMachine {
+            pub fn new() -> Self {
+                Self { definition: #fsm_def }
+            }
+        }
     };
     TokenStream::from(expanded)
 }
