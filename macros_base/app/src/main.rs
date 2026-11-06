@@ -1,6 +1,5 @@
 #[proc_macro_attribute]
-pub fn require_role(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let role = attr.to_string();
+pub fn transactional(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input_fn = parse_macro_input!(item as syn::ItemFn);
     let vis = input_fn.vis;
     let sig = input_fn.sig;
@@ -8,8 +7,10 @@ pub fn require_role(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         #vis #sig {
-            println!("Checking security clearance for role: {}", #role);
-            #block
+            println!("TX BEGIN");
+            let res = (|| { #block })();
+            println!("TX COMMIT");
+            res
         }
     };
     TokenStream::from(expanded)
