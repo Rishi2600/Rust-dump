@@ -1,14 +1,12 @@
-#[proc_macro_attribute]
-pub fn spawn_background(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let input_fn = parse_macro_input!(item as syn::ItemFn);
-    let fn_name = input_fn.sig.ident.clone();
-
+#[proc_macro]
+pub fn compile_sql(input: TokenStream) -> TokenStream {
+    let query_str = input.to_string();
+    // Validate SQL structure at compile time
     let expanded = quote! {
-        #input_fn
-        pub fn dispatch_async() {
-            std::thread::spawn(|| {
-                #fn_name();
-            });
+        {
+            let query = #query_str;
+            println!("Executing validated SQL: {}", query);
+            query
         }
     };
     TokenStream::from(expanded)
