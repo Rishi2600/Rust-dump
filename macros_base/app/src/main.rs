@@ -1,17 +1,9 @@
-#[derive(Copy, Clone)]
-pub struct NodeId(pub usize);
+use std::cell::RefCell;
 
-pub struct TreeNode<T> {
-    pub data: T,
-    pub children: Vec<NodeId>,
+thread_local! {
+    static SESSION_ID: RefCell<u64> = RefCell::new(0);
 }
 
-pub struct TreeArena<T> {
-    pub nodes: Vec<TreeNode<T>>,
-}
-
-impl<T> TreeArena<T> {
-    pub fn new(root: T) -> Self {
-        Self { nodes: vec![TreeNode { data: root, children: Vec::new() }] }
-    }
+pub fn set_session(id: u64) {
+    SESSION_ID.with(|s| *s.borrow_mut() = id);
 }
