@@ -1,9 +1,13 @@
-use std::cell::RefCell;
-
-thread_local! {
-    static SESSION_ID: RefCell<u64> = RefCell::new(0);
+macro_rules! define_bitfield {
+    ($name:ident { $($field:ident : $shift:expr),* $(,)? }) => {
+        pub struct $name(pub u32);
+        impl $name {
+            $(
+                pub fn $field(&self) -> bool {
+                    ((self.0 >> $shift) & 1) == 1
+                }
+            )*
+        }
+    };
 }
-
-pub fn set_session(id: u64) {
-    SESSION_ID.with(|s| *s.borrow_mut() = id);
-}
+define_bitfield!(PacketFlags { active: 0, error: 1 });
