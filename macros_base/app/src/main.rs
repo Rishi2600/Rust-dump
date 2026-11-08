@@ -1,13 +1,20 @@
-pub struct CsvParser<'a> {
-    data: &'a [u8],
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+pub struct WindowAggregator<Fut> {
+    future: Fut,
 }
 
-impl<'a> CsvParser<'a> {
-    pub fn new(data: &'a [u8]) -> Self {
-        Self { data }
-    }
+impl<Fut: Future> Future for WindowAggregator<Fut> {
+    type Output = Option<Fut::Output>;
 
-    pub fn rows(&self) -> impl Iterator<Item = &'a [u8]> {
-        self.data.split(|&b| b == b'\n')
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // Safety: projecting pin field
+        let fut = unsafe { Pin::map_unchecked_mut(self, |s| &mut s.future) };
+        match fut.poll(cx) {
+            Poll::Ready(val) => Poll::Ready(Some(val)),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
