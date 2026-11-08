@@ -1,20 +1,13 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-
-pub struct ConnectionTracker {
-    active_count: Arc<AtomicUsize>,
+pub struct CsvParser<'a> {
+    data: &'a [u8],
 }
 
-impl ConnectionTracker {
-    pub fn new() -> Self {
-        Self { active_count: Arc::new(AtomicUsize::new(0)) }
+impl<'a> CsvParser<'a> {
+    pub fn new(data: &'a [u8]) -> Self {
+        Self { data }
     }
 
-    pub fn register(&self) {
-        self.active_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn unregister(&self) {
-        self.active_count.fetch_sub(1, Ordering::Relaxed);
+    pub fn rows(&self) -> impl Iterator<Item = &'a [u8]> {
+        self.data.split(|&b| b == b'\n')
     }
 }
