@@ -1,20 +1,26 @@
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+pub struct NoTable;
+pub struct HasTable;
 
-pub struct WindowAggregator<Fut> {
-    future: Fut,
+pub struct QueryBuilder<TableState> {
+    query: String,
+    _state: TableState,
 }
 
-impl<Fut: Future> Future for WindowAggregator<Fut> {
-    type Output = Option<Fut::Output>;
+impl QueryBuilder<NoTable> {
+    pub fn new() -> Self {
+        Self { query: String::from("SELECT *"), _state: NoTable }
+    }
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // Safety: projecting pin field
-        let fut = unsafe { Pin::map_unchecked_mut(self, |s| &mut s.future) };
-        match fut.poll(cx) {
-            Poll::Ready(val) => Poll::Ready(Some(val)),
-            Poll::Pending => Poll::Pending,
+    pub fn from(self, table: &str) -> QueryBuilder<HasTable> {
+        QueryBuilder {
+            query: format!("{} FROM {}", self.query, table),
+            _state: HasTable,
         }
+    }
+}
+
+impl QueryBuilder<HasTable> {
+    pub fn build(self) -> String {
+        format!("{};", self.query)
     }
 }
