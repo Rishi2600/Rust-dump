@@ -1,13 +1,6 @@
-pub struct PanicGuard<F: FnOnce()> {
-    cleanup: Option<F>,
-}
-
-impl<F: FnOnce()> Drop for PanicGuard<F> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            if let Some(f) = self.cleanup.take() {
-                f();
-            }
-        }
-    }
+pub fn process_packet<F>(packet: &[u8], validator: F) -> bool
+where
+    F: for<'a> Fn(&'a [u8]) -> bool,
+{
+    validator(packet)
 }
