@@ -1,13 +1,17 @@
-macro_rules! define_bitfield {
-    ($name:ident { $($field:ident : $shift:expr),* $(,)? }) => {
-        pub struct $name(pub u32);
-        impl $name {
-            $(
-                pub fn $field(&self) -> bool {
-                    ((self.0 >> $shift) & 1) == 1
-                }
-            )*
-        }
-    };
+use std::mem;
+
+#[repr(C, packed)]
+pub struct RawHeader {
+    pub magic: u16,
+    pub payload_size: u32,
 }
-define_bitfield!(PacketFlags { active: 0, error: 1 });
+
+pub fn parse_header(buffer: &[u8]) -> Option<&RawHeader> {
+    if buffer.len() < mem::size_of::<RawHeader>() {
+        return None;
+    }
+    unsafe {
+        let ptr = buffer.as_ptr() as *const RawHeader;
+        Some(&*ptr)
+    }
+}
