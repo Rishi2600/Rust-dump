@@ -1,26 +1,20 @@
-pub struct NoTable;
-pub struct HasTable;
+use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-pub struct QueryBuilder<TableState> {
-    query: String,
-    _state: TableState,
+pub struct FastSpsc<T, const CAP: usize> {
+    buffer: [UnsafeCell<Option<T>>; CAP],
+    head: AtomicUsize,
+    tail: AtomicUsize,
 }
 
-impl QueryBuilder<NoTable> {
+unsafe impl<T: Send, const CAP: usize> Sync for FastSpsc<T, CAP> {}
+
+impl<T, const CAP: usize> FastSpsc<T, CAP> {
     pub fn new() -> Self {
-        Self { query: String::from("SELECT *"), _state: NoTable }
-    }
-
-    pub fn from(self, table: &str) -> QueryBuilder<HasTable> {
-        QueryBuilder {
-            query: format!("{} FROM {}", self.query, table),
-            _state: HasTable,
+        Self {
+            buffer: std::array::from_fn(|_| UnsafeCell::new(None)),
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
         }
-    }
-}
-
-impl QueryBuilder<HasTable> {
-    pub fn build(self) -> String {
-        format!("{};", self.query)
     }
 }
