@@ -1,18 +1,20 @@
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::cell::UnsafeCell;
 
-pub struct TokenBucket {
-    capacity: usize,
-    tokens: Mutex<(usize, Instant)>,
-    refill_rate: Duration,
+pub struct StringPool {
+    buffer: UnsafeCell<Vec<u8>>,
 }
 
-impl TokenBucket {
-    pub fn new(capacity: usize, refill_rate: Duration) -> Self {
-        Self {
-            capacity,
-            tokens: Mutex::new((capacity, Instant::now())),
-            refill_rate,
+impl StringPool {
+    pub fn new(capacity: usize) -> Self {
+        Self { buffer: UnsafeCell::new(Vec::with_capacity(capacity)) }
+    }
+
+    pub fn push(&self, s: &str) -> &[u8] {
+        unsafe {
+            let buf = &mut *self.buffer.get();
+            let start = buf.len();
+            buf.extend_from_slice(s.as_bytes());
+            &buf[start..]
         }
     }
 }
