@@ -1,12 +1,9 @@
-pub trait SqlRowMapper {
-    type Output;
-    fn map_row(row: &[u8]) -> Self::Output;
-}
+use std::sync::OnceLock;
 
-struct UserMapper;
-impl SqlRowMapper for UserMapper {
-    type Output = String;
-    fn map_row(_row: &[u8]) -> Self::Output {
-        String::from("John Doe")
-    }
+static GLOBAL_CONFIG: OnceLock<Result<String, &'static str>> = OnceLock::new();
+
+pub fn get_config() -> Result<&'static String, &'static str> {
+    GLOBAL_CONFIG.get_or_init(|| {
+        Ok(String::from("Production Environment"))
+    }).as_ref().map_err(|e| *e)
 }
