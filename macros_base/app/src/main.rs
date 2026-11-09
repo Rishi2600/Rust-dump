@@ -1,17 +1,21 @@
-use std::mem;
+pub struct Locked;
+pub struct Unlocked;
 
-#[repr(C, packed)]
-pub struct RawHeader {
-    pub magic: u16,
-    pub payload_size: u32,
+pub struct SecureVault<State> {
+    code: u32,
+    _state: State,
 }
 
-pub fn parse_header(buffer: &[u8]) -> Option<&RawHeader> {
-    if buffer.len() < mem::size_of::<RawHeader>() {
-        return None;
+impl SecureVault<Locked> {
+    pub fn new(code: u32) -> Self {
+        Self { code, _state: Locked }
     }
-    unsafe {
-        let ptr = buffer.as_ptr() as *const RawHeader;
-        Some(&*ptr)
+
+    pub fn unlock(self, attempt: u32) -> Result<SecureVault<Unlocked>, Self> {
+        if attempt == self.code {
+            Ok(SecureVault { code: self.code, _state: Unlocked })
+        } else {
+            Err(self)
+        }
     }
 }
