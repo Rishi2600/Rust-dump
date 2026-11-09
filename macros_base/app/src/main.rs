@@ -1,9 +1,18 @@
-use std::sync::OnceLock;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
-static GLOBAL_CONFIG: OnceLock<Result<String, &'static str>> = OnceLock::new();
+pub struct TokenBucket {
+    capacity: usize,
+    tokens: Mutex<(usize, Instant)>,
+    refill_rate: Duration,
+}
 
-pub fn get_config() -> Result<&'static String, &'static str> {
-    GLOBAL_CONFIG.get_or_init(|| {
-        Ok(String::from("Production Environment"))
-    }).as_ref().map_err(|e| *e)
+impl TokenBucket {
+    pub fn new(capacity: usize, refill_rate: Duration) -> Self {
+        Self {
+            capacity,
+            tokens: Mutex::new((capacity, Instant::now())),
+            refill_rate,
+        }
+    }
 }
