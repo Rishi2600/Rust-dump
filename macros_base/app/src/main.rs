@@ -1,13 +1,21 @@
-pub struct UriPathTokenizer<'a> {
-    path: &'a str,
+use std::ops::{Deref, DerefMut};
+use std::sync::Mutex;
+
+pub struct AuditedGuard<'a, T> {
+    guard: std::sync::MutexGuard<'a, T>,
 }
 
-impl<'a> UriPathTokenizer<'a> {
-    pub fn new(path: &'a str) -> Self {
-        Self { path }
-    }
+impl<'a, T> Deref for AuditedGuard<'a, T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target { &self.guard }
+}
 
-    pub fn segments(&self) -> impl Iterator<Item = &'a str> {
-        self.path.split('/').filter(|s| !s.is_empty())
+impl<'a, T> DerefMut for AuditedGuard<'a, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.guard }
+}
+
+impl<'a, T> Drop for AuditedGuard<'a, T> {
+    fn drop(&mut self) {
+        println!("Audit: Shared resource modified and unlocked.");
     }
 }
