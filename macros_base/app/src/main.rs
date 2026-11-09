@@ -1,20 +1,15 @@
-use std::cell::UnsafeCell;
-
-pub struct StringPool {
-    buffer: UnsafeCell<Vec<u8>>,
-}
-
-impl StringPool {
-    pub fn new(capacity: usize) -> Self {
-        Self { buffer: UnsafeCell::new(Vec::with_capacity(capacity)) }
-    }
-
-    pub fn push(&self, s: &str) -> &[u8] {
-        unsafe {
-            let buf = &mut *self.buffer.get();
-            let start = buf.len();
-            buf.extend_from_slice(s.as_bytes());
-            &buf[start..]
+pub async fn retry_async<F, Fut, T, E>(mut op: F) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    loop {
+        match op().await {
+            Ok(val) => return Ok(val),
+            Err(e) => {
+                // In production: add backoff sleep here
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
         }
     }
 }
