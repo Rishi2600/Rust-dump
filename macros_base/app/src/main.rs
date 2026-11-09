@@ -1,21 +1,21 @@
-use std::ops::{Deref, DerefMut};
-use std::sync::Mutex;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
-pub struct AuditedGuard<'a, T> {
-    guard: std::sync::MutexGuard<'a, T>,
+pub struct YieldOnce {
+    yielded: bool,
 }
 
-impl<'a, T> Deref for AuditedGuard<'a, T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target { &self.guard }
-}
+impl Future for YieldOnce {
+    type Output = ();
 
-impl<'a, T> DerefMut for AuditedGuard<'a, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.guard }
-}
-
-impl<'a, T> Drop for AuditedGuard<'a, T> {
-    fn drop(&mut self) {
-        println!("Audit: Shared resource modified and unlocked.");
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.yielded {
+            Poll::Ready(())
+        } else {
+            self.yielded = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
     }
 }
