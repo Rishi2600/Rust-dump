@@ -1,19 +1,12 @@
-use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::Arc;
-
-pub struct ConfigSnapshot<T> {
-    current: AtomicPtr<T>,
+pub trait SqlRowMapper {
+    type Output;
+    fn map_row(row: &[u8]) -> Self::Output;
 }
 
-impl<T> ConfigSnapshot<T> {
-    pub fn new(val: T) -> Self {
-        let boxed = Box::into_raw(Box::new(val));
-        Self { current: AtomicPtr::new(boxed) }
-    }
-
-    pub fn update(&self, new_val: T) {
-        let new_ptr = Box::into_raw(Box::new(new_val));
-        let old_ptr = self.current.swap(new_ptr, Ordering::AcqRel);
-        unsafe { let _ = Box::from_raw(old_ptr); }
+struct UserMapper;
+impl SqlRowMapper for UserMapper {
+    type Output = String;
+    fn map_row(_row: &[u8]) -> Self::Output {
+        String::from("John Doe")
     }
 }
