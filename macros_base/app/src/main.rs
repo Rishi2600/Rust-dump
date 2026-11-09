@@ -1,15 +1,13 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-
-pub struct SequenceGenerator {
-    counter: AtomicU64,
+pub struct UriPathTokenizer<'a> {
+    path: &'a str,
 }
 
-impl SequenceGenerator {
-    pub fn new() -> Self {
-        Self { counter: AtomicU64::new(0) }
+impl<'a> UriPathTokenizer<'a> {
+    pub fn new(path: &'a str) -> Self {
+        Self { path }
     }
 
-    pub fn next_id(&self) -> u64 {
-        self.counter.fetch_add(1, Ordering::Relaxed)
+    pub fn segments(&self) -> impl Iterator<Item = &'a str> {
+        self.path.split('/').filter(|s| !s.is_empty())
     }
 }
