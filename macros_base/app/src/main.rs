@@ -1,21 +1,15 @@
-pub struct Locked;
-pub struct Unlocked;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-pub struct SecureVault<State> {
-    code: u32,
-    _state: State,
+pub struct SequenceGenerator {
+    counter: AtomicU64,
 }
 
-impl SecureVault<Locked> {
-    pub fn new(code: u32) -> Self {
-        Self { code, _state: Locked }
+impl SequenceGenerator {
+    pub fn new() -> Self {
+        Self { counter: AtomicU64::new(0) }
     }
 
-    pub fn unlock(self, attempt: u32) -> Result<SecureVault<Unlocked>, Self> {
-        if attempt == self.code {
-            Ok(SecureVault { code: self.code, _state: Unlocked })
-        } else {
-            Err(self)
-        }
+    pub fn next_id(&self) -> u64 {
+        self.counter.fetch_add(1, Ordering::Relaxed)
     }
 }
