@@ -1,15 +1,16 @@
-pub async fn retry_async<F, Fut, T, E>(mut op: F) -> Result<T, E>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T, E>>,
-{
-    loop {
-        match op().await {
-            Ok(val) => return Ok(val),
-            Err(e) => {
-                // In production: add backoff sleep here
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-        }
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum ProtocolState { Disconnected, Handshaking, Established, Error }
+
+pub struct ProtocolSession<const S: ProtocolState>;
+
+impl ProtocolSession<{ ProtocolState::Disconnected }> {
+    pub fn start_handshake(self) -> ProtocolSession<{ ProtocolState::Handshaking }> {
+        ProtocolSession
+    }
+}
+
+impl ProtocolSession<{ ProtocolState::Handshaking }> {
+    pub fn establish(self) -> ProtocolSession<{ ProtocolState::Established }> {
+        ProtocolSession
     }
 }
