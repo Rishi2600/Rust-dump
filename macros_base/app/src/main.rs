@@ -1,11 +1,26 @@
-use core::arch::asm;
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::cell::UnsafeCell;
 
-pub unsafe fn outb(port: u16, value: u8) {
-    asm!("out dx, al", in("dx") port, in("al") value, options(nostack, preserves_flags));
+pub struct KernelSpinlock<T> {
+    locked: AtomicBool,
+    data: UnsafeCell<T>,
 }
 
-pub unsafe fn inb(port: u16) -> u8 {
-    let value: u8;
-    asm!("in al, dx", out("al") value, in("dx") port, options(nostack, preserves_flags));
-    value
+unsafe impl<T: Send> Sync for KernelSpinlock<T> {}
+
+impl<T> KernelSpinlock<T> {
+    pub const fn new(data: T) -> Self {
+        Self { locked: AtomicBool::new(false), data: UnsafeCell::new(data) }
+    }
+
+    pub fn lock(&self) -> *mut T {
+        while self.locked.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            core::hint::spin_loop();
+        }
+        self.data.get()
+    }
+
+    pub unsafe fn unlock(&self) {
+        self.locked.store(false, Ordering::Release);
+    }
 }
