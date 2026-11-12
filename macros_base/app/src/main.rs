@@ -1,26 +1,12 @@
-use core::sync::atomic::{AtomicBool, Ordering};
-use core::cell::UnsafeCell;
+#[repr(transparent)]
+#[derive(Copy, Clone)]
+pub struct PageTableEntry(pub u64);
 
-pub struct KernelSpinlock<T> {
-    locked: AtomicBool,
-    data: UnsafeCell<T>,
-}
-
-unsafe impl<T: Send> Sync for KernelSpinlock<T> {}
-
-impl<T> KernelSpinlock<T> {
-    pub const fn new(data: T) -> Self {
-        Self { locked: AtomicBool::new(false), data: UnsafeCell::new(data) }
+impl PageTableEntry {
+    pub fn set_addr(&mut self, addr: u64, flags: u64) {
+        self.0 = (addr & 0x000fffff_fffff000) | (flags & 0xfff);
     }
 
-    pub fn lock(&self) -> *mut T {
-        while self.locked.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-            core::hint::spin_loop();
-        }
-        self.data.get()
-    }
-
-    pub unsafe fn unlock(&self) {
-        self.locked.store(false, Ordering::Release);
-    }
+    pub fn is_present(&self) -> bool { (self.0 & 1) != 0 }
+    pub fn is_writable(&self) -> bool { ((self.0 >> 1) & 1) != 0 }
 }
