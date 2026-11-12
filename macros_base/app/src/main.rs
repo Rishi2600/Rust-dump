@@ -1,17 +1,15 @@
-use core::ptr::{read_volatile, write_volatile};
+use core::arch::asm;
 
-pub struct SerialPort {
-    base_addr: usize,
+pub unsafe fn load_page_table(pml4_physical_addr: u64) {
+    asm!(
+        "mov cr3, {},",
+        in(reg) pml4_physical_addr,
+        options(nostack, preserves_flags)
+    );
 }
 
-impl SerialPort {
-    pub unsafe fn write_data(&mut self, data: u8) {
-        let data_reg = self.base_addr as *mut u8;
-        write_volatile(data_reg, data);
-    }
-
-    pub unsafe fn read_data(&self) -> u8 {
-        let data_reg = self.base_addr as *const u8;
-        read_volatile(data_reg)
-    }
+pub unsafe fn read_cr3() -> u64 {
+    let cr3_val: u64;
+    asm!("mov {}, cr3", out(reg) cr3_val, options(nostack, preserves_flags));
+    cr3_val
 }
