@@ -1,16 +1,15 @@
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub enum ProtocolState { Disconnected, Handshaking, Established, Error }
+#![no_std]
+#![no_main]
 
-pub struct ProtocolSession<const S: ProtocolState>;
+use core::panic::PanicInfo;
 
-impl ProtocolSession<{ ProtocolState::Disconnected }> {
-    pub fn start_handshake(self) -> ProtocolSession<{ ProtocolState::Handshaking }> {
-        ProtocolSession
-    }
+#[no_mangle]
+pub extern "C" fn _start() -> ! {
+    // Kernel entry point
+    loop {}
 }
 
-impl ProtocolSession<{ ProtocolState::Handshaking }> {
-    pub fn establish(self) -> ProtocolSession<{ ProtocolState::Established }> {
-        ProtocolSession
-    }
+#[panic_handler]
+fn panic(_info: &PanicInfo) -> ! {
+    loop {}
 }
