@@ -1,9 +1,10 @@
 #[repr(C, packed)]
-pub struct GdtEntry {
-    pub limit_low: u16,
-    pub base_low: u16,
-    pub base_middle: u8,
-    pub access: u8,
-    pub granularity: u8,
-    pub base_high: u8,
+pub struct IdtEntry {
+    pub offset_low: u16,
+    pub selector: u16,
+    pub ist: u8,
+    pub type_attr: u8,
+    pub offset_middle: u16,
+    pub offset_high: u32,
+    pub reserved: u32,
 }
