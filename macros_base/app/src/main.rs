@@ -1,9 +1,12 @@
-use core::arch::asm;
+#[repr(C)]
+pub struct InterruptStackFrame {
+    pub instruction_pointer: u64,
+    pub code_segment: u64,
+    pub cpu_flags: u64,
+    pub stack_pointer: u64,
+    pub stack_segment: u64,
+}
 
-pub unsafe fn flush_tlb(virtual_address: usize) {
-    asm!(
-        "invlpg [{0}]",
-        in(reg) virtual_address,
-        options(nostack, preserves_flags)
-    );
+pub extern "C" fn default_interrupt_handler(frame: &InterruptStackFrame) {
+    // Handle hardware interrupt or exception
 }
