@@ -1,14 +1,13 @@
-use core::arch::asm;
-
-pub unsafe fn write_gs_base(addr: u64) {
-    const IA32_GS_BASE: u32 = 0xC0000101;
-    let low = addr as u32;
-    let high = (addr >> 32) as u32;
-    asm!(
-        "wrmsr",
-        in("ecx") IA32_GS_BASE,
-        in("eax") low,
-        in("edx") high,
-        options(nostack, preserves_flags)
-    );
+#[repr(C)]
+pub struct VirtIoMmioHeader {
+    pub magic_value: u32,
+    pub version: u32,
+    pub device_id: u32,
+    pub vendor_id: u32,
+    pub device_features: u32,
+    pub driver_features: u32,
+    pub queue_sel: u32,
+    pub queue_num_max: u32,
+    pub queue_num: u32,
+    pub queue_ready: u32,
 }
