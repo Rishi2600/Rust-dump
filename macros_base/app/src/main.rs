@@ -1,13 +1,15 @@
-#[repr(C)]
-pub struct VirtIoMmioHeader {
-    pub magic_value: u32,
-    pub version: u32,
-    pub device_id: u32,
-    pub vendor_id: u32,
-    pub device_features: u32,
-    pub driver_features: u32,
-    pub queue_sel: u32,
-    pub queue_num_max: u32,
-    pub queue_num: u32,
-    pub queue_ready: u32,
+pub struct FrameBitmap<const SIZE: usize> {
+    bitmap: [u8; SIZE],
+}
+
+impl<const SIZE: usize> FrameBitmap<SIZE> {
+    pub const fn new() -> Self {
+        Self { bitmap: [0; SIZE] }
+    }
+
+    pub fn mark_allocated(&mut self, frame_index: usize) {
+        let byte_idx = frame_index / 8;
+        let bit_idx = frame_index % 8;
+        self.bitmap[byte_idx] |= 1 << bit_idx;
+    }
 }
