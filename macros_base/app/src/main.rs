@@ -1,15 +1,17 @@
-#![no_std]
-#![no_main]
+use core::ptr::{read_volatile, write_volatile};
 
-use core::panic::PanicInfo;
-
-#[no_mangle]
-pub extern "C" fn _start() -> ! {
-    // Kernel entry point
-    loop {}
+pub struct SerialPort {
+    base_addr: usize,
 }
 
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    loop {}
+impl SerialPort {
+    pub unsafe fn write_data(&mut self, data: u8) {
+        let data_reg = self.base_addr as *mut u8;
+        write_volatile(data_reg, data);
+    }
+
+    pub unsafe fn read_data(&self) -> u8 {
+        let data_reg = self.base_addr as *const u8;
+        read_volatile(data_reg)
+    }
 }
