@@ -1,23 +1,12 @@
-pub struct FreeFrame {
-    next: *mut FreeFrame,
+pub struct SlabHeader {
+    pub next_slab: *mut SlabHeader,
+    pub free_list: *mut u8,
+    pub in_use: u16,
+    pub capacity: u16,
 }
 
-pub struct FrameFreeList {
-    head: *mut FreeFrame,
-}
-
-impl FrameFreeList {
-    pub unsafe fn push(&mut self, frame: *mut FreeFrame) {
-        (*frame).next = self.head;
-        self.head = frame;
-    }
-
-    pub unsafe fn pop(&mut self) -> Option<*mut FreeFrame> {
-        if self.head.is_null() {
-            return None;
-        }
-        let frame = self.head;
-        self.head = (*frame).next;
-        Some(frame)
-    }
+pub struct SlabCache {
+    pub object_size: usize,
+    pub partial: *mut SlabHeader,
+    pub full: *mut SlabHeader,
 }
