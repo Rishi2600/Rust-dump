@@ -1,15 +1,17 @@
-use core::alloc::{GlobalAlloc, Layout};
-use core::ptr::null_mut;
-
-pub struct KernelHeap;
-
-unsafe impl GlobalAlloc for KernelHeap {
-    unsafe fn alloc(&self, _layout: Layout) -> *mut u8 {
-        null_mut() // Delegate to the slab / buddy allocator
-    }
-
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+#[repr(C)]
+pub struct Multiboot2Tag {
+    pub typ: u32,
+    pub size: u32,
 }
 
-#[global_allocator]
-static HEAP: KernelHeap = KernelHeap;
+pub unsafe fn find_tag(info_addr: usize, wanted: u32) -> Option<*const Multiboot2Tag> {
+    let mut tag = (info_addr + 8) as *const Multiboot2Tag;
+    while (*tag).typ != 0 {
+        if (*tag).typ == wanted {
+            return Some(tag);
+        }
+        let next = (tag as usize + (*tag).size as usize + 7) & !7;
+        tag = next as *const Multiboot2Tag;
+    }
+    None
+}
