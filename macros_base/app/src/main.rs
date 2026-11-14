@@ -1,26 +1,21 @@
-pub struct RunQueue<const N: usize> {
-    tasks: [usize; N],
-    head: usize,
-    len: usize,
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+pub struct SeqLock {
+    seq: AtomicUsize,
 }
 
-impl<const N: usize> RunQueue<N> {
-    pub fn enqueue(&mut self, tid: usize) -> bool {
-        if self.len == N {
-            return false;
+impl SeqLock {
+    pub fn read<T>(&self, f: impl Fn() -> T) -> T {
+        loop {
+            let start = self.seq.load(Ordering::Acquire);
+            if start & 1 != 0 {
+                core::hint::spin_loop();
+                continue;
+            }
+            let value = f();
+            if self.seq.load(Ordering::Acquire) == start {
+                return value;
+            }
         }
-        self.tasks[(self.head + self.len) % N] = tid;
-        self.len += 1;
-        true
-    }
-
-    pub fn pick_next(&mut self) -> Option<usize> {
-        if self.len == 0 {
-            return None;
-        }
-        let tid = self.tasks[self.head];
-        self.head = (self.head + 1) % N;
-        self.len -= 1;
-        Some(tid)
     }
 }
