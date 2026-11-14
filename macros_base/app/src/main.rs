@@ -1,9 +1,23 @@
-const KERNEL_OFFSET: u64 = 0xFFFF_FFFF_8000_0000;
-
-pub const fn virt_to_phys(virt: u64) -> u64 {
-    virt - KERNEL_OFFSET
+pub struct FreeFrame {
+    next: *mut FreeFrame,
 }
 
-pub const fn phys_to_virt(phys: u64) -> u64 {
-    phys + KERNEL_OFFSET
+pub struct FrameFreeList {
+    head: *mut FreeFrame,
+}
+
+impl FrameFreeList {
+    pub unsafe fn push(&mut self, frame: *mut FreeFrame) {
+        (*frame).next = self.head;
+        self.head = frame;
+    }
+
+    pub unsafe fn pop(&mut self) -> Option<*mut FreeFrame> {
+        if self.head.is_null() {
+            return None;
+        }
+        let frame = self.head;
+        self.head = (*frame).next;
+        Some(frame)
+    }
 }
