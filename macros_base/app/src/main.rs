@@ -1,17 +1,13 @@
-#[repr(C)]
-pub struct Multiboot2Tag {
-    pub typ: u32,
-    pub size: u32,
-}
+pub const PT_LOAD: u32 = 1;
 
-pub unsafe fn find_tag(info_addr: usize, wanted: u32) -> Option<*const Multiboot2Tag> {
-    let mut tag = (info_addr + 8) as *const Multiboot2Tag;
-    while (*tag).typ != 0 {
-        if (*tag).typ == wanted {
-            return Some(tag);
-        }
-        let next = (tag as usize + (*tag).size as usize + 7) & !7;
-        tag = next as *const Multiboot2Tag;
-    }
-    None
+#[repr(C)]
+pub struct Elf64ProgramHeader {
+    pub p_type: u32,
+    pub p_flags: u32,
+    pub p_offset: u64,
+    pub p_vaddr: u64,
+    pub p_paddr: u64,
+    pub p_filesz: u64,
+    pub p_memsz: u64,
+    pub p_align: u64,
 }
