@@ -1,21 +1,23 @@
+use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-pub struct SeqLock {
-    seq: AtomicUsize,
+pub struct RingBuffer<const N: usize> {
+    buf: UnsafeCell<[u8; N]>,
+    head: AtomicUsize,
+    tail: AtomicUsize,
 }
 
-impl SeqLock {
-    pub fn read<T>(&self, f: impl Fn() -> T) -> T {
-        loop {
-            let start = self.seq.load(Ordering::Acquire);
-            if start & 1 != 0 {
-                core::hint::spin_loop();
-                continue;
-            }
-            let value = f();
-            if self.seq.load(Ordering::Acquire) == start {
-                return value;
-            }
+unsafe impl<const N: usize> Sync for RingBuffer<N> {}
+
+impl<const N: usize> RingBuffer<N> {
+    pub fn push(&self, byte: u8) -> bool {
+        let tail = self.tail.load(Ordering::Relaxed);
+        let next = (tail + 1) % N;
+        if next == self.head.load(Ordering::Acquire) {
+            return false; // Full
         }
+        unsafe { (*self.buf.get())[tail] = byte };
+        self.tail.store(next, Ordering::Release);
+        true
     }
 }
