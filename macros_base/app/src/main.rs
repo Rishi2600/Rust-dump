@@ -1,7 +1,13 @@
-const VGA_BUFFER: *mut u16 = 0xb8000 as *mut u16;
-const VGA_WIDTH: usize = 80;
+use core::arch::asm;
 
-pub unsafe fn vga_put_char(row: usize, col: usize, ch: u8, color: u8) {
-    let entry = (color as u16) << 8 | ch as u16;
-    VGA_BUFFER.add(row * VGA_WIDTH + col).write_volatile(entry);
+pub unsafe fn rdmsr(msr: u32) -> u64 {
+    let (low, high): (u32, u32);
+    asm!(
+        "rdmsr",
+        in("ecx") msr,
+        out("eax") low,
+        out("edx") high,
+        options(nomem, nostack, preserves_flags)
+    );
+    ((high as u64) << 32) | low as u64
 }
