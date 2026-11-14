@@ -1,14 +1,8 @@
-use core::arch::asm;
-
-pub fn rdtsc() -> u64 {
-    let (low, high): (u32, u32);
-    unsafe {
-        asm!(
-            "rdtsc",
-            out("eax") low,
-            out("edx") high,
-            options(nomem, nostack, preserves_flags)
-        );
-    }
-    ((high as u64) << 32) | low as u64
+pub fn page_table_indices(virt: u64) -> [usize; 4] {
+    [
+        ((virt >> 39) & 0x1FF) as usize, // PML4
+        ((virt >> 30) & 0x1FF) as usize, // PDPT
+        ((virt >> 21) & 0x1FF) as usize, // PD
+        ((virt >> 12) & 0x1FF) as usize, // PT
+    ]
 }
