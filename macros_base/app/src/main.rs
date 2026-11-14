@@ -1,23 +1,10 @@
-use core::arch::asm;
-
-pub struct IrqGuard {
-    was_enabled: bool,
-}
-
-impl IrqGuard {
-    pub fn new() -> Self {
-        let rflags: u64;
-        unsafe {
-            asm!("pushfq", "pop {}", "cli", out(reg) rflags);
-        }
-        Self { was_enabled: rflags & (1 << 9) != 0 }
-    }
-}
-
-impl Drop for IrqGuard {
-    fn drop(&mut self) {
-        if self.was_enabled {
-            unsafe { asm!("sti", options(nomem, nostack)) };
-        }
-    }
+#[repr(C, packed)]
+pub struct TaskStateSegment {
+    reserved_1: u32,
+    pub privilege_stack_table: [u64; 3],
+    reserved_2: u64,
+    pub interrupt_stack_table: [u64; 7],
+    reserved_3: u64,
+    reserved_4: u16,
+    pub iomap_base: u16,
 }
