@@ -8,5 +8,6 @@ pub mod instr;
 pub mod memory;
 pub mod mmu;
 pub mod paging;
+pub mod scheduler;
 pub mod stats;
 pub mod task;
