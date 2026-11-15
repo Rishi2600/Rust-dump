@@ -1,3 +1,6 @@
+use crate::error::{KResult, KernelError};
+use crate::instr::Reg;
+
 /// One meaningful source line, split into its parts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Line {
@@ -93,4 +96,80 @@ pub fn is_identifier(text: &str) -> bool {
         .next()
         .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
         && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+fn asm_error(line: usize, msg: impl Into<String>) -> KernelError {
+    KernelError::Assembly {
+        line,
+        msg: msg.into(),
+    }
+}
+
+/// A parsed operand, before labels are resolved to addresses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Token {
+    Reg(Reg),
+    Imm(i64),
+    Label(String),
+}
+
+pub fn parse_operand(text: &str, line: usize) -> KResult<Token> {
+    if let Some(reg) = parse_reg(text) {
+        Ok(Token::Reg(reg))
+    } else if let Some(value) = parse_imm(text) {
+        Ok(Token::Imm(value))
+    } else if is_identifier(text) {
+        Ok(Token::Label(text.to_string()))
+    } else {
+        Err(asm_error(line, format!("invalid operand `{text}`")))
+    }
+}
+
+fn parse_reg(text: &str) -> Option<Reg> {
+    let digits = text.strip_prefix(['r', 'R'])?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Reg::new(digits.parse().ok()?)
+}
+
+/// Immediates are decimal (`-12`), hexadecimal (`0x1F`) or characters (`'A'`).
+fn parse_imm(text: &str) -> Option<i64> {
+    let quoted = text
+        .strip_prefix('\'')
+        .and_then(|rest| rest.strip_suffix('\''));
+    if let Some(literal) = quoted {
+        let literal = unescape(literal)?;
+        let mut chars = literal.chars();
+        return match (chars.next(), chars.next()) {
+            (Some(ch), None) => Some(ch as i64),
+            _ => None,
+        };
+    }
+    match text.strip_prefix("0x") {
+        Some(hex) => i64::from_str_radix(hex, 16).ok(),
+        None => text.parse().ok(),
+    }
+}
+
+/// Expand backslash escapes inside a character or string literal.
+fn unescape(text: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        out.push(match chars.next()? {
+            'n' => '\n',
+            't' => '\t',
+            '0' => '\0',
+            '\\' => '\\',
+            '\'' => '\'',
+            '"' => '"',
+            _ => return None,
+        });
+    }
+    Some(out)
 }
