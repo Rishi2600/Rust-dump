@@ -68,3 +68,26 @@ impl Cond {
         }
     }
 }
+
+/// The memory a CPU sees. The kernel plugs in an MMU; tests can use flat RAM.
+pub trait Bus {
+    fn load(&mut self, addr: usize) -> KResult<i64>;
+    fn store(&mut self, addr: usize, value: i64) -> KResult<()>;
+}
+
+impl Context {
+    /// Push a word onto the stack, which grows towards lower addresses.
+    /// `sp` only moves once the store has succeeded, so a fault can be retried.
+    pub fn push(&mut self, bus: &mut dyn Bus, value: i64) -> KResult<()> {
+        let addr = self.sp.checked_sub(1).ok_or(KernelError::StackOverflow)?;
+        bus.store(addr, value)?;
+        self.sp = addr;
+        Ok(())
+    }
+
+    pub fn pop(&mut self, bus: &mut dyn Bus) -> KResult<i64> {
+        let value = bus.load(self.sp)?;
+        self.sp += 1;
+        Ok(value)
+    }
+}

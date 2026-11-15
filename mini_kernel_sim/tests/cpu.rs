@@ -39,3 +39,38 @@ fn conditions_follow_comparison_flags() {
     assert!(Cond::Gt.holds(Greater) && !Cond::Gt.holds(Equal));
     assert!(Cond::Ge.holds(Equal) && !Cond::Ge.holds(Less));
 }
+
+/// Flat RAM with no paging, standing in for the MMU.
+struct Ram(Vec<i64>);
+
+impl Bus for Ram {
+    fn load(&mut self, addr: usize) -> Result<i64, KernelError> {
+        self.0.get(addr).copied().ok_or(KernelError::SegFault(addr))
+    }
+
+    fn store(&mut self, addr: usize, value: i64) -> Result<(), KernelError> {
+        let slot = self.0.get_mut(addr).ok_or(KernelError::SegFault(addr))?;
+        *slot = value;
+        Ok(())
+    }
+}
+
+#[test]
+fn stack_grows_down_and_pops_in_reverse() {
+    let mut ram = Ram(vec![0; 8]);
+    let mut ctx = Context::new(8);
+    ctx.push(&mut ram, 10).unwrap();
+    ctx.push(&mut ram, 20).unwrap();
+    assert_eq!(ctx.sp, 6);
+    assert_eq!(ctx.pop(&mut ram), Ok(20));
+    assert_eq!(ctx.pop(&mut ram), Ok(10));
+    assert_eq!(ctx.pop(&mut ram), Err(KernelError::SegFault(8)));
+    assert_eq!(ctx.sp, 8);
+}
+
+#[test]
+fn push_at_address_zero_overflows() {
+    let mut ctx = Context::new(0);
+    let overflow = ctx.push(&mut Ram(Vec::new()), 1);
+    assert_eq!(overflow, Err(KernelError::StackOverflow));
+}
