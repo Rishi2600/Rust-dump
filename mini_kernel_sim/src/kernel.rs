@@ -169,6 +169,10 @@ impl Kernel {
             Syscall::Exit => self.finish(pid, TaskState::Exited(arg))?,
             Syscall::PrintInt => self.console.write_str(&arg.to_string()),
             Syscall::PrintChar => self.console.write_char(word_to_char(arg)),
+            Syscall::PrintStr => {
+                let text = self.read_user_string(pid, arg)?;
+                self.console.write_str(&text);
+            }
             _ => return Err(KernelError::BadSyscall(number)),
         }
         Ok(())
@@ -178,6 +182,37 @@ impl Kernel {
     fn finish(&mut self, pid: usize, state: TaskState) -> KResult<()> {
         self.task_mut(pid)?.state = state;
         Ok(())
+    }
+}
+
+/// Longest string the kernel will copy out of a task in one call.
+const MAX_USER_STRING: i64 = 4096;
+
+impl Kernel {
+    /// Read one word of a task's memory on the kernel's behalf.
+    fn read_user(&self, pid: usize, addr: i64) -> KResult<i64> {
+        let task = self.task(pid)?;
+        let addr = usize::try_from(addr).map_err(|_| KernelError::SegFault(addr as usize))?;
+        match task.space.translate(addr) {
+            Ok((frame, offset)) => self.memory.read(frame, offset),
+            // A page the task never touched is logically all zeroes.
+            Err(KernelError::PageFault(_)) => Ok(0),
+            Err(fault) => Err(fault),
+        }
+    }
+
+    /// Copy a NUL-terminated string out of a task's address space.
+    /// A pointer outside the address space is the task's fault, not ours.
+    fn read_user_string(&self, pid: usize, addr: i64) -> KResult<String> {
+        let mut text = String::new();
+        for offset in 0..MAX_USER_STRING {
+            let word = self.read_user(pid, addr.saturating_add(offset))?;
+            if word == 0 {
+                break;
+            }
+            text.push(word_to_char(word));
+        }
+        Ok(text)
     }
 }
 

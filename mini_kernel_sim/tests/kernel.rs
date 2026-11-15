@@ -130,3 +130,26 @@ fn unknown_syscall_is_rejected() {
     let mut kernel = boot(Config::default(), &["mov r0, 99\n syscall"]);
     assert_eq!(drive(&mut kernel, 1), Err(KernelError::BadSyscall(99)));
 }
+
+#[test]
+fn print_str_reads_from_user_memory() {
+    let source = "msg: .string \"hi there\\n\"\n mov r0, 3\n mov r1, msg\n syscall\n halt";
+    let mut kernel = boot(Config::default(), &[source]);
+    drive(&mut kernel, 1).unwrap();
+    assert_eq!(kernel.console().output(), "hi there\n");
+}
+
+#[test]
+fn print_str_checks_the_pointer_it_is_given() {
+    // Far outside the address space: the call fails with a segfault.
+    let mut kernel = boot(Config::default(), &["mov r0, 3\n mov r1, 100000\n syscall"]);
+    assert_eq!(drive(&mut kernel, 1), Err(KernelError::SegFault(100000)));
+
+    // Inside the address space but never touched: reads as an empty string.
+    let mut kernel = boot(
+        Config::default(),
+        &["mov r0, 3\n mov r1, 300\n syscall\n halt"],
+    );
+    assert_eq!(drive(&mut kernel, 1), Ok(()));
+    assert_eq!(kernel.console().output(), "");
+}
