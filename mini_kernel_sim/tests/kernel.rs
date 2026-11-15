@@ -153,3 +153,51 @@ fn print_str_checks_the_pointer_it_is_given() {
     assert_eq!(drive(&mut kernel, 1), Ok(()));
     assert_eq!(kernel.console().output(), "");
 }
+
+#[test]
+fn run_interleaves_tasks_with_time_slices() {
+    // Each task prints its letter three times; a 4-tick slice ends right
+    // after each print, so the letters alternate.
+    let source = |letter: char| {
+        format!(
+            "mov r5, 3\nloop: mov r0, 2\n mov r1, '{letter}'\n syscall\n sub r5, 1\n cmp r5, 0\n jgt loop\n halt"
+        )
+    };
+    let (a, b) = (source('a'), source('b'));
+    let config = Config {
+        time_slice: 4,
+        ..Config::default()
+    };
+    let mut kernel = boot(config, &[a.as_str(), b.as_str()]);
+    kernel.run();
+    assert_eq!(kernel.console().output(), "ababab");
+    for task in kernel.tasks() {
+        assert_eq!(task.state, TaskState::Exited(0));
+        assert!(task.stats.preemptions >= 3);
+        assert_eq!(task.stats.syscalls, 3);
+    }
+}
+
+#[test]
+fn faulting_task_is_killed_without_stopping_others() {
+    let crasher = "mov r1, 0\n div r0, r1\n halt";
+    let printer = "mov r0, 1\n mov r1, 7\n syscall\n halt";
+    let mut kernel = boot(Config::default(), &[crasher, printer]);
+    kernel.run();
+    let killed = TaskState::Killed(KernelError::DivideByZero);
+    assert_eq!(kernel.task(1).unwrap().state, killed);
+    assert_eq!(kernel.task(2).unwrap().state, TaskState::Exited(0));
+    assert_eq!(kernel.console().output(), "7");
+}
+
+#[test]
+fn tick_budget_stops_runaway_tasks() {
+    let config = Config {
+        max_ticks: 100,
+        ..Config::default()
+    };
+    let mut kernel = boot(config, &["spin: jmp spin"]);
+    kernel.run();
+    assert_eq!(kernel.ticks(), 100);
+    assert_eq!(kernel.task(1).unwrap().state, TaskState::Ready);
+}

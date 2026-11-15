@@ -216,6 +216,54 @@ impl Kernel {
     }
 }
 
+impl Kernel {
+    /// Run tasks round-robin until none are runnable or the tick budget is spent.
+    pub fn run(&mut self) {
+        while self.ticks < self.config.max_ticks {
+            match self.run_queue.pick_next() {
+                Some(pid) => self.run_slice(pid),
+                None => break,
+            }
+        }
+    }
+
+    /// Let one task run until it blocks, finishes or uses up its time slice.
+    fn run_slice(&mut self, pid: usize) {
+        let Ok(task) = self.task_mut(pid) else {
+            return;
+        };
+        task.state = TaskState::Running;
+        task.stats.dispatches += 1;
+        for _ in 0..self.config.time_slice {
+            self.tick();
+            self.tasks[pid - 1].stats.cpu_ticks += 1;
+            let outcome = match self.step_task(pid) {
+                Ok(Step::Continue) => Ok(()),
+                Ok(Step::Syscall) => self.handle_syscall(pid),
+                Ok(Step::Halt) => self.finish(pid, TaskState::Exited(0)),
+                Err(fault) => Err(fault),
+            };
+            if let Err(fault) = outcome {
+                // A faulting task is killed; everything else keeps running.
+                let _ = self.finish(pid, TaskState::Killed(fault));
+            }
+            if self.tasks[pid - 1].state != TaskState::Running {
+                return;
+            }
+        }
+        // Time slice used up: preempt the task and send it to the back of the queue.
+        let task = &mut self.tasks[pid - 1];
+        task.state = TaskState::Ready;
+        task.stats.preemptions += 1;
+        self.run_queue.enqueue(pid);
+    }
+
+    /// Advance the timer by one tick.
+    fn tick(&mut self) {
+        self.ticks += 1;
+    }
+}
+
 /// Back `page` with a freshly zeroed frame.
 fn map_fresh_page(
     frames: &mut FrameAllocator,
