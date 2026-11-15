@@ -8,3 +8,4 @@ pub mod instr;
 pub mod memory;
 pub mod mmu;
 pub mod paging;
+pub mod stats;
