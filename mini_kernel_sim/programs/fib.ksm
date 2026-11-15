@@ -1,0 +1,26 @@
+; Print the first ten Fibonacci numbers, using a subroutine and the stack.
+
+        mov     r4, 0           ; a
+        mov     r5, 1           ; b
+        mov     r6, 10          ; numbers left to print
+loop:   mov     r1, r4
+        call    print_line
+        mov     r2, r4
+        add     r2, r5          ; next = a + b
+        mov     r4, r5
+        mov     r5, r2
+        sub     r6, 1
+        cmp     r6, 0
+        jgt     loop
+        halt
+
+; print_line(r1): print the integer in r1 followed by a newline.
+print_line:
+        push    r0
+        mov     r0, 1           ; print_int(r1)
+        syscall
+        mov     r0, 2           ; print_char('\n')
+        mov     r1, '\n'
+        syscall
+        pop     r0
+        ret

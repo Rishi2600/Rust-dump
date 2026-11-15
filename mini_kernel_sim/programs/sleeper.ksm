@@ -1,0 +1,48 @@
+; Sleep between messages. While this task is blocked the CPU goes to other
+; tasks, or idles if there are none.
+;
+; The tick count is formatted into a buffer in user space, so each line goes
+; out in a single print_str call and cannot be split by a context switch.
+
+msg:    .ascii  "sleeper: awake at tick "
+digits: .zero   12              ; the number, a newline and a NUL land here
+
+        mov     r5, 3           ; rounds left
+loop:   mov     r0, 6           ; sleep(20)
+        mov     r1, 20
+        syscall
+        mov     r0, 7           ; uptime -> r0
+        syscall
+        call    format
+        mov     r0, 3           ; print_str(msg), which runs on into digits
+        mov     r1, msg
+        syscall
+        sub     r5, 1
+        cmp     r5, 0
+        jgt     loop
+        halt
+
+; format(r0): write r0 in decimal at `digits`, followed by "\n" and a NUL.
+format:
+        mov     r2, 0           ; digits on the stack
+split:  mov     r3, r0
+        mod     r3, 10
+        add     r3, '0'
+        push    r3              ; least significant digit goes on first
+        add     r2, 1
+        div     r0, 10
+        cmp     r0, 0
+        jgt     split
+        mov     r4, digits      ; write position
+emit:   pop     r3              ; most significant digit comes off first
+        store   r3, r4
+        add     r4, 1
+        sub     r2, 1
+        cmp     r2, 0
+        jgt     emit
+        mov     r3, '\n'
+        store   r3, r4
+        add     r4, 1
+        mov     r3, 0
+        store   r3, r4
+        ret

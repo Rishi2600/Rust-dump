@@ -1,0 +1,11 @@
+; Read far outside the address space. The kernel kills this task with a
+; segmentation fault and carries on running everything else.
+
+msg:    .string "crash: about to touch a bad address\n"
+
+        mov     r0, 3           ; print_str(msg)
+        mov     r1, msg
+        syscall
+        mov     r1, 100000
+        load    r0, r1          ; faults here
+        halt

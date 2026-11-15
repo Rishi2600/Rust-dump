@@ -1,0 +1,24 @@
+; Count from 1 to 5. Each line is patched into a buffer and written with a
+; single print_str call, so lines stay whole even when the task is preempted
+; in the middle of the loop.
+
+line:   .ascii  "task "
+pid:    .ascii  "?"
+        .ascii  ": count "
+count:  .string "?\n"
+
+        mov     r0, 5           ; getpid -> r0
+        syscall
+        add     r0, '0'
+        store   r0, pid         ; patch the pid digit into the line
+        mov     r5, 1
+loop:   mov     r2, r5
+        add     r2, '0'
+        store   r2, count       ; patch the count digit into the line
+        mov     r0, 3           ; print_str(line)
+        mov     r1, line
+        syscall
+        add     r5, 1
+        cmp     r5, 5
+        jle     loop
+        halt
