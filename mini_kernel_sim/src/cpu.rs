@@ -1,6 +1,7 @@
+use crate::error::{KResult, KernelError};
 use std::cmp::Ordering;
 
-use crate::instr::{NUM_REGS, Operand, Reg};
+use crate::instr::{AluOp, NUM_REGS, Operand, Reg};
 
 /// Saved CPU state of one task: what a context switch has to preserve.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,4 +37,19 @@ impl Context {
             Operand::Imm(value) => value,
         }
     }
+}
+
+/// Arithmetic/logic unit. Arithmetic wraps; dividing by zero traps.
+pub fn alu(op: AluOp, lhs: i64, rhs: i64) -> KResult<i64> {
+    Ok(match op {
+        AluOp::Add => lhs.wrapping_add(rhs),
+        AluOp::Sub => lhs.wrapping_sub(rhs),
+        AluOp::Mul => lhs.wrapping_mul(rhs),
+        AluOp::Div | AluOp::Mod if rhs == 0 => return Err(KernelError::DivideByZero),
+        AluOp::Div => lhs.wrapping_div(rhs),
+        AluOp::Mod => lhs.wrapping_rem(rhs),
+        AluOp::And => lhs & rhs,
+        AluOp::Or => lhs | rhs,
+        AluOp::Xor => lhs ^ rhs,
+    })
 }
