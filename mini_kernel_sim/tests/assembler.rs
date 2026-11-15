@@ -79,3 +79,33 @@ fn assemble_reports_errors_with_line_numbers() {
     assert_eq!(line_of("a: nop\na: nop"), 2); // duplicate label
     assert_eq!(line_of("mov 5, r1"), 1); // destination must be a register
 }
+
+#[test]
+fn data_directives_fill_the_data_segment() {
+    let source = "nums: .word 1, -2, 0x10\nbuf: .zero 2\nhi: .string \"ok\\n\"\ntag: .ascii \"x\"\n mov r1, hi\n load r2, nums\n halt";
+    let program = assemble(source).unwrap();
+    let (o, k, x) = ('o' as i64, 'k' as i64, 'x' as i64);
+    assert_eq!(program.data, [1, -2, 16, 0, 0, o, k, 10, 0, x]);
+    let (r1, r2) = (Reg::new(1).unwrap(), Reg::new(2).unwrap());
+    assert_eq!(
+        program.instrs,
+        [
+            Instr::Mov(r1, Operand::Imm(5)),
+            Instr::Load(r2, Operand::Imm(0)),
+            Instr::Halt,
+        ]
+    );
+}
+
+#[test]
+fn labels_bind_to_the_following_statement() {
+    let source = "jmp end\nmsg:\n .string \"a\"\nend:\n halt\n mov r0, msg";
+    let program = assemble(source).unwrap();
+    let r0 = Reg::new(0).unwrap();
+    assert_eq!(program.instrs[0], Instr::Jump(Cond::Always, 1));
+    assert_eq!(program.instrs[2], Instr::Mov(r0, Operand::Imm(0)));
+    assert!(matches!(
+        assemble("nop\n.bogus 1"),
+        Err(KernelError::Assembly { line: 2, .. })
+    ));
+}

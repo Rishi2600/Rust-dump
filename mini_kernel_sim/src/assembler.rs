@@ -273,34 +273,113 @@ impl Encoder<'_> {
     }
 }
 
+/// Largest block a single `.zero` directive may reserve.
+const MAX_ZERO_WORDS: usize = 1 << 16;
+
+/// Append the words produced by a data directive to the data segment.
+fn emit_data(line: &Line, directive: &str, data: &mut Vec<i64>) -> KResult<()> {
+    let number = line.number;
+    match directive {
+        ".word" => {
+            for operand in &line.operands {
+                match parse_operand(operand, number)? {
+                    Token::Imm(value) => data.push(value),
+                    _ => return Err(asm_error(number, "`.word` expects integer literals")),
+                }
+            }
+        }
+        ".zero" => {
+            let count = match line.operands.as_slice() {
+                [count] => count.parse().ok().filter(|&n: &usize| n <= MAX_ZERO_WORDS),
+                _ => None,
+            };
+            let count = count.ok_or_else(|| asm_error(number, "`.zero` expects a word count"))?;
+            data.resize(data.len() + count, 0);
+        }
+        ".ascii" | ".string" => {
+            let text = match line.operands.as_slice() {
+                [literal] => literal
+                    .strip_prefix('"')
+                    .and_then(|rest| rest.strip_suffix('"'))
+                    .and_then(unescape),
+                _ => None,
+            };
+            let text = text.ok_or_else(|| {
+                asm_error(number, format!("`{directive}` expects one quoted string"))
+            })?;
+            data.extend(text.chars().map(|ch| ch as i64));
+            if directive == ".string" {
+                data.push(0); // NUL terminator
+            }
+        }
+        _ => {
+            return Err(asm_error(
+                number,
+                format!("unknown directive `{directive}`"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Bind the labels waiting in `pending` to `address`.
+fn bind_labels(
+    labels: &mut HashMap<String, i64>,
+    pending: &mut Vec<&Line>,
+    address: usize,
+) -> KResult<()> {
+    for line in pending.drain(..) {
+        if let Some(label) = &line.label {
+            if labels.insert(label.clone(), address as i64).is_some() {
+                return Err(asm_error(line.number, format!("duplicate label `{label}`")));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Assemble source text into a program, resolving labels to addresses.
+///
+/// A label binds to the statement that follows it: an instruction index for
+/// code, or a word offset into the data segment for a directive
+/// (`.word`, `.zero`, `.ascii`, `.string`).
 pub fn assemble(source: &str) -> KResult<Program> {
     let lines = tokenize(source);
     let mut program = Program::default();
     let mut labels = HashMap::new();
 
-    // Pass 1: bind each label to the index of the instruction that follows it.
+    // Pass 1: lay out the data segment and bind every label.
     let mut pc = 0;
+    let mut pending = Vec::new();
     for line in &lines {
-        if let Some(label) = &line.label {
-            if labels.insert(label.clone(), pc as i64).is_some() {
-                return Err(asm_error(line.number, format!("duplicate label `{label}`")));
-            }
+        if line.label.is_some() {
+            pending.push(line);
         }
-        if line.mnemonic.is_some() {
+        let Some(mnemonic) = &line.mnemonic else {
+            continue;
+        };
+        if mnemonic.starts_with('.') {
+            bind_labels(&mut labels, &mut pending, program.data.len())?;
+            emit_data(line, mnemonic, &mut program.data)?;
+        } else {
+            bind_labels(&mut labels, &mut pending, pc)?;
             pc += 1;
         }
     }
+    bind_labels(&mut labels, &mut pending, pc)?;
 
     // Pass 2: encode instructions now that every label is known.
     for line in &lines {
-        if let Some(mnemonic) = &line.mnemonic {
-            let encoder = Encoder {
-                line,
-                mnemonic,
-                labels: &labels,
-            };
-            program.instrs.push(encoder.encode()?);
+        match &line.mnemonic {
+            Some(mnemonic) if !mnemonic.starts_with('.') => {
+                let encoder = Encoder {
+                    line,
+                    mnemonic,
+                    labels: &labels,
+                };
+                program.instrs.push(encoder.encode()?);
+            }
+            _ => {}
         }
     }
     Ok(program)
