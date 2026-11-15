@@ -109,3 +109,13 @@ fn labels_bind_to_the_following_statement() {
         Err(KernelError::Assembly { line: 2, .. })
     ));
 }
+
+#[test]
+fn disassembly_reassembles_to_the_same_program() {
+    let source = "top: mov r1, -5\n add r1, r2\n cmp r1, 0x10\n jle top\n load r3, r1\n store r3, 40\n push r3\n pop r4\n call top\n ret\n syscall\n nop\n halt";
+    let program = assemble(source).unwrap();
+    let listing: Vec<String> = program.instrs.iter().map(Instr::to_string).collect();
+    assert_eq!(listing[0], "mov r1, -5");
+    assert_eq!(listing[3], "jle 0");
+    assert_eq!(assemble(&listing.join("\n")), Ok(program));
+}

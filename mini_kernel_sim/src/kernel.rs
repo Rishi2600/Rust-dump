@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use crate::console::Console;
 use crate::cpu::Step;
 use crate::error::{KResult, KernelError};
@@ -135,6 +137,9 @@ impl Kernel {
         let Some(&instr) = task.program.instrs.get(pc) else {
             return Err(KernelError::InvalidPc(pc));
         };
+        if self.config.trace {
+            eprintln!("[tick {:>6}] pid {pid} pc {pc:>3}: {instr}", self.ticks);
+        }
         loop {
             let mut bus = Mmu::new(&task.space, &mut self.memory);
             match task.context.step(instr, &mut bus) {
@@ -296,6 +301,42 @@ impl Kernel {
         self.tasks
             .iter()
             .any(|task| matches!(task.state, TaskState::Sleeping { .. }))
+    }
+}
+
+impl Kernel {
+    /// A table of what every task did, followed by system-wide totals.
+    pub fn summary(&self) -> String {
+        let mut out = String::new();
+        let _ = writeln!(
+            out,
+            "{:>3}  {:<12} {:>6} {:>8} {:>6} {:>5} {:>9}  STATE",
+            "PID", "NAME", "TICKS", "SYSCALLS", "FAULTS", "RUNS", "PREEMPTED"
+        );
+        for task in &self.tasks {
+            let stats = &task.stats;
+            let _ = writeln!(
+                out,
+                "{:>3}  {:<12} {:>6} {:>8} {:>6} {:>5} {:>9}  {}",
+                task.pid,
+                task.name,
+                stats.cpu_ticks,
+                stats.syscalls,
+                stats.page_faults,
+                stats.dispatches,
+                stats.preemptions,
+                task.state
+            );
+        }
+        let _ = writeln!(
+            out,
+            "ticks: {} total, {} idle    frames in use: {} of {}",
+            self.ticks,
+            self.idle_ticks,
+            self.frames.used(),
+            self.frames.total()
+        );
+        out
     }
 }
 

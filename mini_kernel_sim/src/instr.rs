@@ -1,3 +1,5 @@
+use std::fmt;
+
 pub const NUM_REGS: usize = 8;
 
 /// A general-purpose register, `r0` through `r7`.
@@ -132,6 +134,42 @@ pub enum Instr {
 pub struct Program {
     pub instrs: Vec<Instr>,
     pub data: Vec<i64>,
+}
+
+impl fmt::Display for Reg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "r{}", self.0)
+    }
+}
+
+impl fmt::Display for Operand {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Operand::Reg(reg) => write!(f, "{reg}"),
+            Operand::Imm(value) => write!(f, "{value}"),
+        }
+    }
+}
+
+/// Disassembly: prints an instruction in the syntax the assembler accepts.
+impl fmt::Display for Instr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Instr::Nop => write!(f, "nop"),
+            Instr::Mov(dst, src) => write!(f, "mov {dst}, {src}"),
+            Instr::Alu(op, dst, src) => write!(f, "{} {dst}, {src}", op.mnemonic()),
+            Instr::Cmp(lhs, rhs) => write!(f, "cmp {lhs}, {rhs}"),
+            Instr::Jump(cond, target) => write!(f, "{} {target}", cond.mnemonic()),
+            Instr::Load(dst, addr) => write!(f, "load {dst}, {addr}"),
+            Instr::Store(src, addr) => write!(f, "store {src}, {addr}"),
+            Instr::Push(src) => write!(f, "push {src}"),
+            Instr::Pop(dst) => write!(f, "pop {dst}"),
+            Instr::Call(target) => write!(f, "call {target}"),
+            Instr::Ret => write!(f, "ret"),
+            Instr::Syscall => write!(f, "syscall"),
+            Instr::Halt => write!(f, "halt"),
+        }
+    }
 }
 
 #[cfg(test)]

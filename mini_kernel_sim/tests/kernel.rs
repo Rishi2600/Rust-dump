@@ -268,3 +268,15 @@ fn finished_tasks_return_their_frames() {
     assert_eq!(kernel.task(2).unwrap().state, killed);
     assert_eq!(kernel.free_frames(), Config::default().frames);
 }
+
+#[test]
+fn summary_reports_each_task_and_the_totals() {
+    let mut kernel = boot(Config::default(), &["halt", "mov r1, 0\n div r0, r1"]);
+    kernel.run();
+    let summary = kernel.summary();
+    assert!(summary.contains("task1"));
+    assert!(summary.contains("exited(0)"));
+    assert!(summary.contains("killed: division by zero"));
+    assert!(summary.contains("ticks: 3 total, 0 idle"));
+    assert!(summary.contains("frames in use: 0 of 64"));
+}
