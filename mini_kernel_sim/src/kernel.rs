@@ -178,7 +178,14 @@ impl Kernel {
                 self.run_queue.enqueue(pid);
             }
             Syscall::GetPid => self.task_mut(pid)?.context.regs[0] = pid as i64,
-            _ => return Err(KernelError::BadSyscall(number)),
+            Syscall::Sleep => {
+                let wake_at = self.ticks.saturating_add(arg.max(0) as u64);
+                self.task_mut(pid)?.state = TaskState::Sleeping { wake_at };
+            }
+            Syscall::Uptime => {
+                let now = self.ticks as i64;
+                self.task_mut(pid)?.context.regs[0] = now;
+            }
         }
         Ok(())
     }
@@ -227,6 +234,11 @@ impl Kernel {
         while self.ticks < self.config.max_ticks {
             match self.run_queue.pick_next() {
                 Some(pid) => self.run_slice(pid),
+                None if self.has_sleepers() => {
+                    // Nothing is runnable: idle until the timer wakes a sleeper.
+                    self.tick();
+                    self.idle_ticks += 1;
+                }
                 None => break,
             }
         }
@@ -266,6 +278,19 @@ impl Kernel {
     /// Advance the timer by one tick.
     fn tick(&mut self) {
         self.ticks += 1;
+        // Wake every sleeper whose time has come.
+        for task in &mut self.tasks {
+            if matches!(task.state, TaskState::Sleeping { wake_at } if wake_at <= self.ticks) {
+                task.state = TaskState::Ready;
+                self.run_queue.enqueue(task.pid);
+            }
+        }
+    }
+
+    fn has_sleepers(&self) -> bool {
+        self.tasks
+            .iter()
+            .any(|task| matches!(task.state, TaskState::Sleeping { .. }))
     }
 }
 

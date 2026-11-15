@@ -229,3 +229,27 @@ fn getpid_returns_the_callers_pid() {
     kernel.run();
     assert_eq!(kernel.console().output(), "12");
 }
+
+#[test]
+fn sleep_blocks_until_the_timer_wakes_the_task() {
+    let sleeper = "mov r0, 6\n mov r1, 50\n syscall\n mov r0, 2\n mov r1, 's'\n syscall\n halt";
+    let runner = "mov r0, 2\n mov r1, 'r'\n syscall\n halt";
+    let mut kernel = boot(Config::default(), &[sleeper, runner]);
+    kernel.run();
+    // The sleeper was spawned first but prints last.
+    assert_eq!(kernel.console().output(), "rs");
+    assert!(kernel.ticks() >= 50);
+    assert!(kernel.idle_ticks() > 0);
+    for task in kernel.tasks() {
+        assert_eq!(task.state, TaskState::Exited(0));
+    }
+}
+
+#[test]
+fn uptime_reports_ticks_since_boot() {
+    // The syscall is the second instruction, so it runs on tick 2.
+    let source = "mov r0, 7\n syscall\n mov r1, r0\n mov r0, 1\n syscall\n halt";
+    let mut kernel = boot(Config::default(), &[source]);
+    kernel.run();
+    assert_eq!(kernel.console().output(), "2");
+}
