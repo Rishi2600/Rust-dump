@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+
 use crate::error::{KResult, KernelError};
-use crate::instr::Reg;
+use crate::instr::{AluOp, Cond, Instr, Operand, Program, Reg};
 
 /// One meaningful source line, split into its parts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,4 +174,134 @@ fn unescape(text: &str) -> Option<String> {
         });
     }
     Some(out)
+}
+
+/// Turns one tokenized line into an instruction.
+struct Encoder<'a> {
+    line: &'a Line,
+    mnemonic: &'a str,
+    labels: &'a HashMap<String, i64>,
+}
+
+impl Encoder<'_> {
+    fn error(&self, msg: String) -> KernelError {
+        asm_error(self.line.number, msg)
+    }
+
+    fn arity(&self, expected: usize) -> KResult<()> {
+        let found = self.line.operands.len();
+        if found == expected {
+            return Ok(());
+        }
+        let name = self.mnemonic;
+        Err(self.error(format!(
+            "`{name}` expects {expected} operand(s), found {found}"
+        )))
+    }
+
+    fn reg(&self, index: usize) -> KResult<Reg> {
+        match parse_operand(&self.line.operands[index], self.line.number)? {
+            Token::Reg(reg) => Ok(reg),
+            _ => {
+                let (name, position) = (self.mnemonic, index + 1);
+                Err(self.error(format!("operand {position} of `{name}` must be a register")))
+            }
+        }
+    }
+
+    /// A register, an immediate, or a label standing for its address.
+    fn value(&self, index: usize) -> KResult<Operand> {
+        match parse_operand(&self.line.operands[index], self.line.number)? {
+            Token::Reg(reg) => Ok(Operand::Reg(reg)),
+            Token::Imm(value) => Ok(Operand::Imm(value)),
+            Token::Label(name) => match self.labels.get(&name) {
+                Some(address) => Ok(Operand::Imm(*address)),
+                None => Err(self.error(format!("undefined label `{name}`"))),
+            },
+        }
+    }
+
+    fn target(&self, index: usize) -> KResult<usize> {
+        match self.value(index)? {
+            Operand::Imm(address) if address >= 0 => Ok(address as usize),
+            _ => Err(self.error("jump target must be a label or address".into())),
+        }
+    }
+
+    fn nullary(&self, instr: Instr) -> KResult<Instr> {
+        self.arity(0)?;
+        Ok(instr)
+    }
+
+    fn binary(&self, build: impl FnOnce(Reg, Operand) -> Instr) -> KResult<Instr> {
+        self.arity(2)?;
+        Ok(build(self.reg(0)?, self.value(1)?))
+    }
+
+    fn encode(&self) -> KResult<Instr> {
+        let name = self.mnemonic;
+        if let Some(op) = AluOp::from_mnemonic(name) {
+            return self.binary(|dst, src| Instr::Alu(op, dst, src));
+        }
+        if let Some(cond) = Cond::from_mnemonic(name) {
+            self.arity(1)?;
+            return Ok(Instr::Jump(cond, self.target(0)?));
+        }
+        match name {
+            "nop" => self.nullary(Instr::Nop),
+            "ret" => self.nullary(Instr::Ret),
+            "syscall" => self.nullary(Instr::Syscall),
+            "halt" => self.nullary(Instr::Halt),
+            "mov" => self.binary(Instr::Mov),
+            "cmp" => self.binary(Instr::Cmp),
+            "load" => self.binary(Instr::Load),
+            "store" => self.binary(Instr::Store),
+            "push" => {
+                self.arity(1)?;
+                Ok(Instr::Push(self.value(0)?))
+            }
+            "pop" => {
+                self.arity(1)?;
+                Ok(Instr::Pop(self.reg(0)?))
+            }
+            "call" => {
+                self.arity(1)?;
+                Ok(Instr::Call(self.target(0)?))
+            }
+            _ => Err(self.error(format!("unknown mnemonic `{name}`"))),
+        }
+    }
+}
+
+/// Assemble source text into a program, resolving labels to addresses.
+pub fn assemble(source: &str) -> KResult<Program> {
+    let lines = tokenize(source);
+    let mut program = Program::default();
+    let mut labels = HashMap::new();
+
+    // Pass 1: bind each label to the index of the instruction that follows it.
+    let mut pc = 0;
+    for line in &lines {
+        if let Some(label) = &line.label {
+            if labels.insert(label.clone(), pc as i64).is_some() {
+                return Err(asm_error(line.number, format!("duplicate label `{label}`")));
+            }
+        }
+        if line.mnemonic.is_some() {
+            pc += 1;
+        }
+    }
+
+    // Pass 2: encode instructions now that every label is known.
+    for line in &lines {
+        if let Some(mnemonic) = &line.mnemonic {
+            let encoder = Encoder {
+                line,
+                mnemonic,
+                labels: &labels,
+            };
+            program.instrs.push(encoder.encode()?);
+        }
+    }
+    Ok(program)
 }
