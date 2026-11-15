@@ -11,4 +11,5 @@ pub mod mmu;
 pub mod paging;
 pub mod scheduler;
 pub mod stats;
+pub mod syscall;
 pub mod task;
