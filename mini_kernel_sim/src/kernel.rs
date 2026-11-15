@@ -190,9 +190,14 @@ impl Kernel {
         Ok(())
     }
 
-    /// Record how a task ended.
+    /// Record how a task ended and reclaim everything it was holding.
     fn finish(&mut self, pid: usize, state: TaskState) -> KResult<()> {
-        self.task_mut(pid)?.state = state;
+        let Some(task) = self.tasks.get_mut(pid.wrapping_sub(1)) else {
+            return Err(KernelError::NoSuchTask(pid));
+        };
+        task.state = state;
+        unmap_all(&mut self.frames, &mut task.space);
+        self.run_queue.remove(pid);
         Ok(())
     }
 }

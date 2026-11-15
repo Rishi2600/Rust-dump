@@ -253,3 +253,18 @@ fn uptime_reports_ticks_since_boot() {
     kernel.run();
     assert_eq!(kernel.console().output(), "2");
 }
+
+#[test]
+fn finished_tasks_return_their_frames() {
+    // One task exits normally holding data and stack pages; the other is
+    // killed holding a demand-paged frame.
+    let tidy = "buf: .zero 70\n push 1\n halt";
+    let crasher = "store r0, 100\n load r0, 100000";
+    let mut kernel = boot(Config::default(), &[tidy, crasher]);
+    assert!(kernel.free_frames() < Config::default().frames);
+    kernel.run();
+    assert_eq!(kernel.task(1).unwrap().state, TaskState::Exited(0));
+    let killed = TaskState::Killed(KernelError::SegFault(100000));
+    assert_eq!(kernel.task(2).unwrap().state, killed);
+    assert_eq!(kernel.free_frames(), Config::default().frames);
+}
