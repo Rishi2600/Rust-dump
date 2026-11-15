@@ -173,6 +173,11 @@ impl Kernel {
                 let text = self.read_user_string(pid, arg)?;
                 self.console.write_str(&text);
             }
+            Syscall::Yield => {
+                self.task_mut(pid)?.state = TaskState::Ready;
+                self.run_queue.enqueue(pid);
+            }
+            Syscall::GetPid => self.task_mut(pid)?.context.regs[0] = pid as i64,
             _ => return Err(KernelError::BadSyscall(number)),
         }
         Ok(())

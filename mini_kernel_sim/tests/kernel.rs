@@ -201,3 +201,31 @@ fn tick_budget_stops_runaway_tasks() {
     assert_eq!(kernel.ticks(), 100);
     assert_eq!(kernel.task(1).unwrap().state, TaskState::Ready);
 }
+
+#[test]
+fn yield_hands_the_cpu_to_the_next_task() {
+    // Print, yield, print again. The slice is long enough that without the
+    // yield each task would finish in one go and the output would be "aabb".
+    let source = |letter: char| {
+        format!(
+            "mov r1, '{letter}'\n mov r0, 2\n syscall\n mov r0, 4\n syscall\n mov r0, 2\n syscall\n halt"
+        )
+    };
+    let (a, b) = (source('a'), source('b'));
+    let config = Config {
+        time_slice: 100,
+        ..Config::default()
+    };
+    let mut kernel = boot(config, &[a.as_str(), b.as_str()]);
+    kernel.run();
+    assert_eq!(kernel.console().output(), "abab");
+    assert_eq!(kernel.task(1).unwrap().stats.preemptions, 0);
+}
+
+#[test]
+fn getpid_returns_the_callers_pid() {
+    let source = "mov r0, 5\n syscall\n mov r1, r0\n mov r0, 1\n syscall\n halt";
+    let mut kernel = boot(Config::default(), &[source, source]);
+    kernel.run();
+    assert_eq!(kernel.console().output(), "12");
+}
