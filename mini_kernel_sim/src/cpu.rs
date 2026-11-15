@@ -1,7 +1,7 @@
 use crate::error::{KResult, KernelError};
 use std::cmp::Ordering;
 
-use crate::instr::{AluOp, NUM_REGS, Operand, Reg};
+use crate::instr::{AluOp, Cond, NUM_REGS, Operand, Reg};
 
 /// Saved CPU state of one task: what a context switch has to preserve.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,4 +52,19 @@ pub fn alu(op: AluOp, lhs: i64, rhs: i64) -> KResult<i64> {
         AluOp::Or => lhs | rhs,
         AluOp::Xor => lhs ^ rhs,
     })
+}
+
+impl Cond {
+    /// Whether a branch is taken, given the flags left by the last `cmp`.
+    pub fn holds(self, flags: Ordering) -> bool {
+        match self {
+            Cond::Always => true,
+            Cond::Eq => flags == Ordering::Equal,
+            Cond::Ne => flags != Ordering::Equal,
+            Cond::Lt => flags == Ordering::Less,
+            Cond::Le => flags != Ordering::Greater,
+            Cond::Gt => flags == Ordering::Greater,
+            Cond::Ge => flags != Ordering::Less,
+        }
+    }
 }

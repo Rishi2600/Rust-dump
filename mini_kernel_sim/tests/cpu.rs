@@ -27,3 +27,15 @@ fn alu_wraps_and_traps_division_by_zero() {
     assert_eq!(alu(AluOp::Div, 1, 0), Err(KernelError::DivideByZero));
     assert_eq!(alu(AluOp::Mod, 1, 0), Err(KernelError::DivideByZero));
 }
+
+#[test]
+fn conditions_follow_comparison_flags() {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    assert!(Cond::Always.holds(Less));
+    assert!(Cond::Eq.holds(Equal) && !Cond::Eq.holds(Less));
+    assert!(Cond::Ne.holds(Greater) && !Cond::Ne.holds(Equal));
+    assert!(Cond::Lt.holds(Less) && !Cond::Lt.holds(Equal));
+    assert!(Cond::Le.holds(Equal) && !Cond::Le.holds(Greater));
+    assert!(Cond::Gt.holds(Greater) && !Cond::Gt.holds(Equal));
+    assert!(Cond::Ge.holds(Equal) && !Cond::Ge.holds(Less));
+}
