@@ -1,8 +1,10 @@
 use crate::console::Console;
+use crate::cpu::Step;
 use crate::error::{KResult, KernelError};
 use crate::frame::{FrameAllocator, PAGE_SIZE};
 use crate::instr::Program;
 use crate::memory::PhysicalMemory;
+use crate::mmu::Mmu;
 use crate::paging::AddressSpace;
 use crate::scheduler::RunQueue;
 use crate::task::Task;
@@ -118,6 +120,22 @@ impl Kernel {
 
     pub fn free_frames(&self) -> usize {
         self.frames.available()
+    }
+}
+
+impl Kernel {
+    /// Execute one instruction of task `pid`, with its memory accesses routed
+    /// through the MMU.
+    pub fn step_task(&mut self, pid: usize) -> KResult<Step> {
+        let Some(task) = self.tasks.get_mut(pid.wrapping_sub(1)) else {
+            return Err(KernelError::NoSuchTask(pid));
+        };
+        let pc = task.context.pc;
+        let Some(&instr) = task.program.instrs.get(pc) else {
+            return Err(KernelError::InvalidPc(pc));
+        };
+        let mut bus = Mmu::new(&task.space, &mut self.memory);
+        task.context.step(instr, &mut bus)
     }
 }
 

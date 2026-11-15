@@ -1,4 +1,5 @@
 use mini_kernel_sim::assembler::assemble;
+use mini_kernel_sim::cpu::Step;
 use mini_kernel_sim::error::KernelError;
 use mini_kernel_sim::kernel::{Config, Kernel};
 use mini_kernel_sim::task::TaskState;
@@ -45,4 +46,16 @@ fn spawn_fails_cleanly_when_memory_runs_out() {
     let spawned = kernel.spawn("big", two_pages_of_data);
     assert_eq!(spawned, Err(KernelError::SegFault(64)));
     assert_eq!(kernel.free_frames(), Config::default().frames);
+}
+
+#[test]
+fn step_task_executes_one_instruction_at_a_time() {
+    let mut kernel = boot(Config::default(), &["mov r3, 42\nhalt"]);
+    assert_eq!(kernel.step_task(1), Ok(Step::Continue));
+    let context = &kernel.task(1).unwrap().context;
+    assert_eq!((context.regs[3], context.pc), (42, 1));
+    assert_eq!(kernel.step_task(1), Ok(Step::Halt));
+    // The program counter has now run off the end of the program.
+    assert_eq!(kernel.step_task(1), Err(KernelError::InvalidPc(2)));
+    assert_eq!(kernel.step_task(9), Err(KernelError::NoSuchTask(9)));
 }
