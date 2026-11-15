@@ -6,6 +6,7 @@ pub mod cpu;
 pub mod error;
 pub mod frame;
 pub mod instr;
+pub mod kernel;
 pub mod memory;
 pub mod mmu;
 pub mod paging;

@@ -1,0 +1,145 @@
+use crate::console::Console;
+use crate::error::{KResult, KernelError};
+use crate::frame::{FrameAllocator, PAGE_SIZE};
+use crate::instr::Program;
+use crate::memory::PhysicalMemory;
+use crate::paging::AddressSpace;
+use crate::scheduler::RunQueue;
+use crate::task::Task;
+
+/// Tunable parameters of the simulated machine.
+#[derive(Debug, Clone)]
+pub struct Config {
+    /// Physical frames available to the whole system.
+    pub frames: usize,
+    /// Size of each task's virtual address space, in pages.
+    pub pages_per_task: usize,
+    /// Instructions a task may run before it is preempted.
+    pub time_slice: u64,
+    /// Hard limit on simulated time, so a runaway program cannot hang the host.
+    pub max_ticks: u64,
+    /// Mirror console output to stdout as it is written.
+    pub echo: bool,
+    /// Log every executed instruction to stderr.
+    pub trace: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            frames: 64,
+            pages_per_task: 8,
+            time_slice: 5,
+            max_ticks: 1_000_000,
+            echo: false,
+            trace: false,
+        }
+    }
+}
+
+/// The kernel: owns physical memory, the task table and the run queue.
+pub struct Kernel {
+    config: Config,
+    frames: FrameAllocator,
+    memory: PhysicalMemory,
+    tasks: Vec<Task>,
+    run_queue: RunQueue,
+    console: Console,
+    ticks: u64,
+    idle_ticks: u64,
+}
+
+impl Kernel {
+    pub fn new(mut config: Config) -> Self {
+        // A zero-length slice would never let any task make progress.
+        config.time_slice = config.time_slice.max(1);
+        Self {
+            frames: FrameAllocator::new(config.frames),
+            memory: PhysicalMemory::new(config.frames),
+            tasks: Vec::new(),
+            run_queue: RunQueue::new(),
+            console: Console::new(config.echo),
+            ticks: 0,
+            idle_ticks: 0,
+            config,
+        }
+    }
+
+    /// Create a task for `program`, load its data segment and make it runnable.
+    /// Pids start at 1 and are never reused.
+    pub fn spawn(&mut self, name: &str, program: Program) -> KResult<usize> {
+        let pid = self.tasks.len() + 1;
+        let mut task = Task::new(pid, name, program, self.config.pages_per_task);
+        if let Err(fault) = self.load_data(&mut task) {
+            unmap_all(&mut self.frames, &mut task.space);
+            return Err(fault);
+        }
+        self.tasks.push(task);
+        self.run_queue.enqueue(pid);
+        Ok(pid)
+    }
+
+    /// Copy the data segment to the bottom of the task's address space.
+    fn load_data(&mut self, task: &mut Task) -> KResult<()> {
+        for (addr, word) in task.program.data.iter().enumerate() {
+            if addr % PAGE_SIZE == 0 {
+                let page = addr / PAGE_SIZE;
+                map_fresh_page(&mut self.frames, &mut self.memory, &mut task.space, page)?;
+            }
+            let (frame, offset) = task.space.translate(addr)?;
+            self.memory.write(frame, offset, *word)?;
+        }
+        Ok(())
+    }
+
+    pub fn task(&self, pid: usize) -> KResult<&Task> {
+        self.tasks
+            .get(pid.wrapping_sub(1))
+            .ok_or(KernelError::NoSuchTask(pid))
+    }
+
+    pub fn tasks(&self) -> &[Task] {
+        &self.tasks
+    }
+
+    pub fn console(&self) -> &Console {
+        &self.console
+    }
+
+    /// Timer ticks since boot.
+    pub fn ticks(&self) -> u64 {
+        self.ticks
+    }
+
+    /// Ticks during which no task was runnable.
+    pub fn idle_ticks(&self) -> u64 {
+        self.idle_ticks
+    }
+
+    pub fn free_frames(&self) -> usize {
+        self.frames.available()
+    }
+}
+
+/// Back `page` with a freshly zeroed frame.
+fn map_fresh_page(
+    frames: &mut FrameAllocator,
+    memory: &mut PhysicalMemory,
+    space: &mut AddressSpace,
+    page: usize,
+) -> KResult<()> {
+    let frame = frames.alloc()?;
+    memory.zero_frame(frame)?;
+    space.map(page, frame).inspect_err(|_| {
+        let _ = frames.free(frame);
+    })
+}
+
+/// Return every frame mapped in `space` to the allocator.
+fn unmap_all(frames: &mut FrameAllocator, space: &mut AddressSpace) {
+    for page in 0..space.pages() {
+        if let Some(frame) = space.unmap(page) {
+            let _ = frames.free(frame);
+        }
+    }
+}
