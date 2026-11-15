@@ -59,3 +59,45 @@ fn step_task_executes_one_instruction_at_a_time() {
     assert_eq!(kernel.step_task(1), Err(KernelError::InvalidPc(2)));
     assert_eq!(kernel.step_task(9), Err(KernelError::NoSuchTask(9)));
 }
+
+#[test]
+fn first_touch_maps_a_zeroed_frame() {
+    let source = "mov r0, 9\n store r0, 200\n load r1, 200\n load r2, 201\n halt";
+    let mut kernel = boot(Config::default(), &[source]);
+    let free_before = kernel.free_frames();
+    for _ in 0..4 {
+        kernel.step_task(1).unwrap();
+    }
+    let task = kernel.task(1).unwrap();
+    assert_eq!((task.context.regs[1], task.context.regs[2]), (9, 0));
+    assert_eq!(task.stats.page_faults, 1);
+    assert_eq!(kernel.free_frames(), free_before - 1);
+}
+
+#[test]
+fn stack_pages_are_mapped_on_demand() {
+    let mut kernel = boot(Config::default(), &["push 5\n pop r3\n halt"]);
+    kernel.step_task(1).unwrap();
+    kernel.step_task(1).unwrap();
+    let task = kernel.task(1).unwrap();
+    assert_eq!(task.context.regs[3], 5);
+    assert_eq!(task.stats.page_faults, 1);
+}
+
+#[test]
+fn access_outside_the_address_space_is_a_segfault() {
+    let mut kernel = boot(Config::default(), &["load r0, 100000"]);
+    assert_eq!(kernel.step_task(1), Err(KernelError::SegFault(100000)));
+    assert_eq!(kernel.task(1).unwrap().stats.page_faults, 0);
+}
+
+#[test]
+fn demand_paging_fails_when_memory_is_exhausted() {
+    let config = Config {
+        frames: 1,
+        ..Config::default()
+    };
+    let mut kernel = boot(config, &["store r0, 0\n store r0, 100"]);
+    kernel.step_task(1).unwrap();
+    assert_eq!(kernel.step_task(1), Err(KernelError::OutOfFrames));
+}

@@ -134,8 +134,19 @@ impl Kernel {
         let Some(&instr) = task.program.instrs.get(pc) else {
             return Err(KernelError::InvalidPc(pc));
         };
-        let mut bus = Mmu::new(&task.space, &mut self.memory);
-        task.context.step(instr, &mut bus)
+        loop {
+            let mut bus = Mmu::new(&task.space, &mut self.memory);
+            match task.context.step(instr, &mut bus) {
+                // Demand paging: back the page with a zeroed frame, then
+                // restart the instruction that faulted.
+                Err(KernelError::PageFault(addr)) => {
+                    task.stats.page_faults += 1;
+                    let page = addr / PAGE_SIZE;
+                    map_fresh_page(&mut self.frames, &mut self.memory, &mut task.space, page)?;
+                }
+                outcome => return outcome,
+            }
+        }
     }
 }
 
