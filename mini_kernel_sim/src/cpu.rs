@@ -1,7 +1,7 @@
 use crate::error::{KResult, KernelError};
 use std::cmp::Ordering;
 
-use crate::instr::{AluOp, Cond, NUM_REGS, Operand, Reg};
+use crate::instr::{AluOp, Cond, Instr, NUM_REGS, Operand, Reg};
 
 /// Saved CPU state of one task: what a context switch has to preserve.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,5 +89,66 @@ impl Context {
         let value = bus.load(self.sp)?;
         self.sp += 1;
         Ok(value)
+    }
+}
+
+/// What the kernel should do after an instruction has executed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Continue,
+    Syscall,
+    Halt,
+}
+
+impl Context {
+    fn address(&self, operand: Operand) -> KResult<usize> {
+        let value = self.value(operand);
+        usize::try_from(value).map_err(|_| KernelError::SegFault(value as usize))
+    }
+
+    /// Execute one instruction.
+    ///
+    /// On a fault the context is left exactly as it was, so the kernel can
+    /// repair the cause (for example by mapping a page) and run it again.
+    pub fn step(&mut self, instr: Instr, bus: &mut dyn Bus) -> KResult<Step> {
+        let mut next_pc = self.pc + 1;
+        let mut outcome = Step::Continue;
+        match instr {
+            Instr::Nop => {}
+            Instr::Mov(dst, src) => self.set(dst, self.value(src)),
+            Instr::Alu(op, dst, src) => {
+                let result = alu(op, self.get(dst), self.value(src))?;
+                self.set(dst, result);
+            }
+            Instr::Cmp(lhs, rhs) => self.flags = self.get(lhs).cmp(&self.value(rhs)),
+            Instr::Jump(cond, target) => {
+                if cond.holds(self.flags) {
+                    next_pc = target;
+                }
+            }
+            Instr::Load(dst, addr) => {
+                let value = bus.load(self.address(addr)?)?;
+                self.set(dst, value);
+            }
+            Instr::Store(src, addr) => bus.store(self.address(addr)?, self.get(src))?,
+            Instr::Push(src) => self.push(bus, self.value(src))?,
+            Instr::Pop(dst) => {
+                let value = self.pop(bus)?;
+                self.set(dst, value);
+            }
+            Instr::Call(target) => {
+                self.push(bus, next_pc as i64)?;
+                next_pc = target;
+            }
+            Instr::Ret => {
+                let target = self.pop(bus)?;
+                next_pc =
+                    usize::try_from(target).map_err(|_| KernelError::InvalidPc(target as usize))?;
+            }
+            Instr::Syscall => outcome = Step::Syscall,
+            Instr::Halt => outcome = Step::Halt,
+        }
+        self.pc = next_pc;
+        Ok(outcome)
     }
 }

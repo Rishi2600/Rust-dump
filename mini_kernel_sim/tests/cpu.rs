@@ -74,3 +74,56 @@ fn push_at_address_zero_overflows() {
     let overflow = ctx.push(&mut Ram(Vec::new()), 1);
     assert_eq!(overflow, Err(KernelError::StackOverflow));
 }
+
+/// Run a program on bare RAM until it halts.
+fn run(program: &[Instr], ram: &mut Ram) -> Context {
+    let mut ctx = Context::new(ram.0.len());
+    while ctx.step(program[ctx.pc], ram).expect("no fault") != Step::Halt {}
+    ctx
+}
+
+#[test]
+fn step_runs_a_countdown_loop() {
+    // r1 = 5 + 4 + 3 + 2 + 1
+    let program = [
+        Instr::Mov(reg(0), Operand::Imm(5)),
+        Instr::Mov(reg(1), Operand::Imm(0)),
+        Instr::Alu(AluOp::Add, reg(1), Operand::Reg(reg(0))),
+        Instr::Alu(AluOp::Sub, reg(0), Operand::Imm(1)),
+        Instr::Cmp(reg(0), Operand::Imm(0)),
+        Instr::Jump(Cond::Gt, 2),
+        Instr::Halt,
+    ];
+    let ctx = run(&program, &mut Ram(vec![0; 4]));
+    assert_eq!(ctx.get(reg(1)), 15);
+}
+
+#[test]
+fn step_handles_memory_and_calls() {
+    let program = [
+        Instr::Mov(reg(0), Operand::Imm(7)),
+        Instr::Store(reg(0), Operand::Imm(3)),
+        Instr::Call(4),
+        Instr::Halt,
+        Instr::Load(reg(1), Operand::Imm(3)),
+        Instr::Ret,
+    ];
+    let mut ram = Ram(vec![0; 16]);
+    let ctx = run(&program, &mut ram);
+    assert_eq!(ctx.get(reg(1)), 7);
+    assert_eq!(ctx.sp, 16);
+}
+
+#[test]
+fn faulting_step_leaves_context_untouched() {
+    let mut ctx = Context::new(4);
+    let before = ctx.clone();
+    let fault = ctx.step(Instr::Load(reg(0), Operand::Imm(99)), &mut Ram(vec![0; 4]));
+    assert_eq!(fault, Err(KernelError::SegFault(99)));
+    assert_eq!(ctx, before);
+    assert_eq!(
+        ctx.step(Instr::Syscall, &mut Ram(Vec::new())),
+        Ok(Step::Syscall)
+    );
+    assert_eq!(ctx.pc, 1);
+}
