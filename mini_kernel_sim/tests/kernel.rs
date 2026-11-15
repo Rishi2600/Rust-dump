@@ -101,3 +101,32 @@ fn demand_paging_fails_when_memory_is_exhausted() {
     kernel.step_task(1).unwrap();
     assert_eq!(kernel.step_task(1), Err(KernelError::OutOfFrames));
 }
+
+/// Drive one task by hand until it finishes, without the scheduler.
+fn drive(kernel: &mut Kernel, pid: usize) -> Result<(), KernelError> {
+    while !kernel.task(pid)?.is_finished() {
+        match kernel.step_task(pid)? {
+            Step::Continue => {}
+            Step::Syscall => kernel.handle_syscall(pid)?,
+            Step::Halt => break,
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn exit_and_console_syscalls() {
+    let source = "mov r0, 1\n mov r1, 42\n syscall\n mov r0, 2\n mov r1, '!'\n syscall\n mov r0, 0\n mov r1, 7\n syscall";
+    let mut kernel = boot(Config::default(), &[source]);
+    drive(&mut kernel, 1).unwrap();
+    assert_eq!(kernel.console().output(), "42!");
+    let task = kernel.task(1).unwrap();
+    assert_eq!(task.state, TaskState::Exited(7));
+    assert_eq!(task.stats.syscalls, 3);
+}
+
+#[test]
+fn unknown_syscall_is_rejected() {
+    let mut kernel = boot(Config::default(), &["mov r0, 99\n syscall"]);
+    assert_eq!(drive(&mut kernel, 1), Err(KernelError::BadSyscall(99)));
+}

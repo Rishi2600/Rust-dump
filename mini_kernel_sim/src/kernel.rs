@@ -7,7 +7,8 @@ use crate::memory::PhysicalMemory;
 use crate::mmu::Mmu;
 use crate::paging::AddressSpace;
 use crate::scheduler::RunQueue;
-use crate::task::Task;
+use crate::syscall::Syscall;
+use crate::task::{Task, TaskState};
 
 /// Tunable parameters of the simulated machine.
 #[derive(Debug, Clone)]
@@ -150,6 +151,36 @@ impl Kernel {
     }
 }
 
+impl Kernel {
+    fn task_mut(&mut self, pid: usize) -> KResult<&mut Task> {
+        self.tasks
+            .get_mut(pid.wrapping_sub(1))
+            .ok_or(KernelError::NoSuchTask(pid))
+    }
+
+    /// Service the system call task `pid` just trapped with.
+    /// The call number is in `r0` and its argument in `r1`.
+    pub fn handle_syscall(&mut self, pid: usize) -> KResult<()> {
+        let task = self.task_mut(pid)?;
+        task.stats.syscalls += 1;
+        let number = task.context.regs[0];
+        let arg = task.context.regs[1];
+        match Syscall::from_number(number)? {
+            Syscall::Exit => self.finish(pid, TaskState::Exited(arg))?,
+            Syscall::PrintInt => self.console.write_str(&arg.to_string()),
+            Syscall::PrintChar => self.console.write_char(word_to_char(arg)),
+            _ => return Err(KernelError::BadSyscall(number)),
+        }
+        Ok(())
+    }
+
+    /// Record how a task ended.
+    fn finish(&mut self, pid: usize, state: TaskState) -> KResult<()> {
+        self.task_mut(pid)?.state = state;
+        Ok(())
+    }
+}
+
 /// Back `page` with a freshly zeroed frame.
 fn map_fresh_page(
     frames: &mut FrameAllocator,
@@ -171,4 +202,12 @@ fn unmap_all(frames: &mut FrameAllocator, space: &mut AddressSpace) {
             let _ = frames.free(frame);
         }
     }
+}
+
+/// Interpret a memory word as a character for the console.
+fn word_to_char(word: i64) -> char {
+    u32::try_from(word)
+        .ok()
+        .and_then(char::from_u32)
+        .unwrap_or(char::REPLACEMENT_CHARACTER)
 }
