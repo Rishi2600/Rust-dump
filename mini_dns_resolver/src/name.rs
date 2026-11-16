@@ -2,6 +2,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use crate::error::{DnsError, DnsResult};
+use crate::wire::Writer;
 
 /// Longest single label, in bytes.
 pub const MAX_LABEL_LEN: usize = 63;
@@ -86,6 +87,18 @@ impl Name {
     }
 }
 
+impl Name {
+    /// Write the wire form: each label prefixed by its length, then a zero
+    /// byte standing for the root.
+    pub fn encode(&self, writer: &mut Writer) {
+        for label in &self.labels {
+            writer.write_u8(label.len() as u8);
+            writer.write_bytes(label);
+        }
+        writer.write_u8(0);
+    }
+}
+
 impl fmt::Display for Name {
     /// Prints the fully qualified form, with the trailing dot.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -118,6 +131,12 @@ impl FromStr for Name {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn encoded(name: &Name) -> Vec<u8> {
+        let mut writer = Writer::new();
+        name.encode(&mut writer);
+        writer.finish()
+    }
 
     fn name(text: &str) -> Name {
         Name::parse(text).expect("valid name")
@@ -159,5 +178,16 @@ mod tests {
     fn unusual_bytes_are_escaped_when_printed() {
         let odd = Name::from_labels(vec![b"a.b".to_vec(), vec![0x07]]).unwrap();
         assert_eq!(odd.to_string(), "a\\046b.\\007.");
+    }
+
+    #[test]
+    fn encodes_labels_with_length_prefixes() {
+        let bytes = encoded(&name("www.example.com"));
+        assert_eq!(
+            bytes, b"\x03www\x07example\x03com\x00",
+            "three labels and the root"
+        );
+        assert_eq!(bytes.len(), name("www.example.com").wire_len());
+        assert_eq!(encoded(&Name::root()), [0]);
     }
 }
