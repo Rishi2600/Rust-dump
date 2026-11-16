@@ -92,6 +92,44 @@ impl Transport for TcpTransport {
     }
 }
 
+/// The transport used on the real network: UDP first, and TCP when the reply
+/// was too big for a datagram.
+#[derive(Debug, Clone)]
+pub struct NetTransport {
+    udp: UdpTransport,
+    tcp: TcpTransport,
+}
+
+impl NetTransport {
+    pub fn new(timeout: Duration) -> Self {
+        Self::on_port(timeout, DNS_PORT)
+    }
+
+    pub fn on_port(timeout: Duration, port: u16) -> Self {
+        Self {
+            udp: UdpTransport { timeout, port },
+            tcp: TcpTransport { timeout, port },
+        }
+    }
+}
+
+impl Transport for NetTransport {
+    fn exchange(&mut self, server: IpAddr, query: &[u8]) -> DnsResult<Vec<u8>> {
+        let reply = self.udp.exchange(server, query)?;
+        if is_truncated(&reply) {
+            // The server cut the reply short and set TC. Ask again over TCP,
+            // which has no size limit to speak of.
+            return self.tcp.exchange(server, query);
+        }
+        Ok(reply)
+    }
+}
+
+/// TC is bit 1 of the third byte of the header.
+fn is_truncated(message: &[u8]) -> bool {
+    message.get(2).is_some_and(|flags| flags & 0x02 != 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,5 +232,35 @@ mod tests {
             transport.exchange(LOCALHOST, b"query"),
             Err(DnsError::Io(_))
         ));
+    }
+
+    /// A UDP socket and a TCP listener sharing one port number.
+    fn local_pair() -> (UdpSocket, TcpListener, u16) {
+        loop {
+            let listener = TcpListener::bind((LOCALHOST, 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            if let Ok(socket) = UdpSocket::bind((LOCALHOST, port)) {
+                return (socket, listener, port);
+            }
+        }
+    }
+
+    #[test]
+    fn a_truncated_udp_reply_is_fetched_again_over_tcp() {
+        let (socket, listener, port) = local_pair();
+        serve_udp(socket, Some(b"\x00\x00\x82\x00")); // QR and TC set
+        serve_tcp(listener, b"full:");
+        let mut transport = NetTransport::on_port(Duration::from_secs(2), port);
+        let reply = transport.exchange(LOCALHOST, b"query");
+        assert_eq!(reply, Ok(b"full:query".to_vec()));
+    }
+
+    #[test]
+    fn a_complete_udp_reply_is_used_as_it_is() {
+        let (socket, _listener, port) = local_pair();
+        serve_udp(socket, Some(b"\x00\x00\x80\x00")); // QR only
+        let mut transport = NetTransport::on_port(Duration::from_secs(2), port);
+        let reply = transport.exchange(LOCALHOST, b"query");
+        assert_eq!(reply, Ok(b"\x00\x00\x80\x00query".to_vec()));
     }
 }
