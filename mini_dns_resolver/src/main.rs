@@ -3,6 +3,7 @@ use std::net::IpAddr;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use mini_dns_resolver::error::DnsError;
 use mini_dns_resolver::name::Name;
 use mini_dns_resolver::resolver::{Config, Resolver};
 use mini_dns_resolver::rtype::RecordType;
@@ -132,7 +133,11 @@ fn main() -> ExitCode {
             Ok(records) if records.is_empty() => println!("; {name} has no {rtype} records"),
             Ok(records) => records.iter().for_each(|record| println!("{record}")),
             Err(error) => {
-                eprintln!("error: {name}: {error}");
+                // This message already names the name it is about.
+                match error {
+                    DnsError::NxDomain(_) => eprintln!("error: {error}"),
+                    _ => eprintln!("error: {name}: {error}"),
+                }
                 failed = true;
             }
         }
