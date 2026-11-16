@@ -12,5 +12,6 @@ pub mod record;
 pub mod resolver;
 pub mod roots;
 pub mod rtype;
+pub mod trace;
 pub mod transport;
 pub mod wire;
