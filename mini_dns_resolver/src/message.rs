@@ -1,4 +1,4 @@
-use crate::error::DnsResult;
+use crate::error::{DnsError, DnsResult};
 use crate::header::{Counts, Header};
 use crate::name::Name;
 use crate::question::Question;
@@ -105,10 +105,34 @@ impl Message {
     }
 }
 
+impl Message {
+    /// Check that this message really is the reply to `query`.
+    ///
+    /// UDP has no connections, so anybody can send a datagram that claims to
+    /// be an answer. Requiring the ID and the question to match is the first
+    /// defence against a forged or stray reply.
+    pub fn check_reply_to(&self, query: &Message) -> DnsResult<()> {
+        if !self.header.response {
+            return Err(DnsError::BadResponse("it is marked as a query".into()));
+        }
+        if self.header.id != query.header.id {
+            return Err(DnsError::BadResponse(format!(
+                "ID {:#06x} does not match the query's {:#06x}",
+                self.header.id, query.header.id
+            )));
+        }
+        if self.questions != query.questions {
+            return Err(DnsError::BadResponse(
+                "it answers a different question".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::DnsError;
 
     /// A real-shaped reply to "example.com A": the answer's owner name is a
     /// pointer back to the name in the question at offset 12.
@@ -168,5 +192,29 @@ mod tests {
         // Root name, type 41, "class" 1232, TTL 0, no data.
         assert!(bytes.ends_with(b"\x00\x00\x29\x04\xD0\x00\x00\x00\x00\x00\x00"));
         assert_eq!(Message::decode(&bytes).unwrap().edns_payload(), Some(1232));
+    }
+
+    #[test]
+    fn a_reply_must_match_the_query_it_claims_to_answer() {
+        let example = Name::parse("example.com").unwrap();
+        let query = Message::query(0x1234, example.clone(), RecordType::A);
+        let reply = Message::decode(REPLY).unwrap();
+        assert_eq!(reply.check_reply_to(&query), Ok(()));
+
+        // A query is not a reply to itself.
+        assert!(matches!(
+            query.check_reply_to(&query),
+            Err(DnsError::BadResponse(_))
+        ));
+        let other_id = Message::query(0x9999, example.clone(), RecordType::A);
+        assert!(matches!(
+            reply.check_reply_to(&other_id),
+            Err(DnsError::BadResponse(_))
+        ));
+        let other_type = Message::query(0x1234, example, RecordType::Aaaa);
+        assert!(matches!(
+            reply.check_reply_to(&other_type),
+            Err(DnsError::BadResponse(_))
+        ));
     }
 }
