@@ -1,4 +1,5 @@
 use std::fmt;
+use std::net::IpAddr;
 use std::str::FromStr;
 
 use crate::error::{DnsError, DnsResult};
@@ -174,6 +175,39 @@ impl Name {
     }
 }
 
+impl Name {
+    /// The name under which an address's PTR record is published.
+    ///
+    /// DNS can only delegate by suffix, so the address is written backwards:
+    /// `192.0.2.1` is looked up as `1.2.0.192.in-addr.arpa.`. That way the
+    /// owner of `192.0.2.0/24` holds everything under `2.0.192.in-addr.arpa.`.
+    /// IPv6 does the same with one label per hexadecimal digit.
+    pub fn reverse(address: IpAddr) -> Self {
+        let (mut labels, suffix): (Vec<Vec<u8>>, &[u8]) = match address {
+            IpAddr::V4(v4) => {
+                let octets = v4.octets();
+                let labels = octets
+                    .iter()
+                    .rev()
+                    .map(|octet| octet.to_string().into_bytes());
+                (labels.collect(), b"in-addr")
+            }
+            IpAddr::V6(v6) => {
+                let octets = v6.octets();
+                let nibbles = octets
+                    .iter()
+                    .rev()
+                    .flat_map(|byte| [byte & 0x0F, byte >> 4]);
+                let labels = nibbles.map(|nibble| vec![b"0123456789abcdef"[usize::from(nibble)]]);
+                (labels.collect(), b"ip6")
+            }
+        };
+        labels.push(suffix.to_vec());
+        labels.push(b"arpa".to_vec());
+        Self { labels }
+    }
+}
+
 impl fmt::Display for Name {
     /// Prints the fully qualified form, with the trailing dot.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -341,5 +375,16 @@ mod tests {
         assert!(!name("example.com").is_subdomain_of(&www));
         // A shared suffix of characters is not a shared suffix of labels.
         assert!(!name("badexample.com").is_subdomain_of(&name("example.com")));
+    }
+
+    #[test]
+    fn reverse_names_spell_the_address_backwards() {
+        let v4 = Name::reverse("192.0.2.1".parse().unwrap());
+        assert_eq!(v4, name("1.2.0.192.in-addr.arpa"));
+
+        let v6 = Name::reverse("2001:db8::1".parse().unwrap());
+        assert_eq!(v6.label_count(), 34);
+        assert!(v6.to_string().starts_with("1.0.0.0."));
+        assert!(v6.to_string().ends_with(".8.b.d.0.1.0.0.2.ip6.arpa."));
     }
 }
