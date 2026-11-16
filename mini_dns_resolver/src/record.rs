@@ -1,3 +1,4 @@
+use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use crate::error::{DnsError, DnsResult};
@@ -177,6 +178,53 @@ impl RData {
             }
             RData::Other(bytes) => writer.write_bytes(bytes),
         }
+    }
+}
+
+impl fmt::Display for RData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RData::A(address) => write!(f, "{address}"),
+            RData::Aaaa(address) => write!(f, "{address}"),
+            RData::Ns(name) | RData::Cname(name) | RData::Ptr(name) => write!(f, "{name}"),
+            RData::Mx {
+                preference,
+                exchange,
+            } => write!(f, "{preference} {exchange}"),
+            RData::Txt(strings) => {
+                for (index, string) in strings.iter().enumerate() {
+                    let separator = if index == 0 { "" } else { " " };
+                    let escaped = string.replace('\\', "\\\\").replace('"', "\\\"");
+                    write!(f, "{separator}\"{escaped}\"")?;
+                }
+                Ok(())
+            }
+            RData::Soa(soa) => write!(
+                f,
+                "{} {} {} {} {} {} {}",
+                soa.mname, soa.rname, soa.serial, soa.refresh, soa.retry, soa.expire, soa.minimum
+            ),
+            // The generic notation for data without a known layout.
+            RData::Other(bytes) => {
+                write!(f, "\\# {}", bytes.len())?;
+                if !bytes.is_empty() {
+                    write!(f, " ")?;
+                }
+                bytes.iter().try_for_each(|byte| write!(f, "{byte:02x}"))
+            }
+        }
+    }
+}
+
+/// One line in the style of a zone file: owner, TTL, class, type, data.
+impl fmt::Display for Record {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}\t{}\t", self.name, self.ttl)?;
+        match self.class {
+            CLASS_IN => write!(f, "IN")?,
+            other => write!(f, "CLASS{other}")?,
+        }
+        write!(f, "\t{}\t{}", self.rtype, self.data)
     }
 }
 
@@ -361,5 +409,26 @@ mod tests {
         let mut writer = Writer::new();
         record.encode(&mut writer);
         assert_eq!(writer.finish(), raw(2, b"\x03ns1\xC0\x00"));
+    }
+
+    #[test]
+    fn records_print_like_zone_file_lines() {
+        let a = Record::new(
+            name("example.com"),
+            RecordType::A,
+            300,
+            RData::A(Ipv4Addr::new(203, 0, 113, 10)),
+        );
+        assert_eq!(a.to_string(), "example.com.\t300\tIN\tA\t203.0.113.10");
+
+        let mx = RData::Mx {
+            preference: 10,
+            exchange: name("mail.example.com"),
+        };
+        assert_eq!(mx.to_string(), "10 mail.example.com.");
+        let txt = RData::Txt(vec!["say \"hi\"".into(), "two".into()]);
+        assert_eq!(txt.to_string(), "\"say \\\"hi\\\"\" \"two\"");
+        assert_eq!(RData::Other(vec![0xDE, 0xAD]).to_string(), "\\# 2 dead");
+        assert_eq!(RData::Other(Vec::new()).to_string(), "\\# 0");
     }
 }
