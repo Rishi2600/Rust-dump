@@ -1,6 +1,7 @@
 //! A small DNS resolver that walks the hierarchy from the root servers.
 
 pub mod cache;
+pub mod classify;
 pub mod error;
 pub mod header;
 pub mod ids;
