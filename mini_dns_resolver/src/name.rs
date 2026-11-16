@@ -153,6 +153,27 @@ impl Name {
     }
 }
 
+impl Name {
+    pub fn label_count(&self) -> usize {
+        self.labels.len()
+    }
+
+    /// The name one level up: `www.example.com.` gives `example.com.`.
+    /// The root has no parent.
+    pub fn parent(&self) -> Option<Name> {
+        let (_, rest) = self.labels.split_first()?;
+        Some(Self {
+            labels: rest.to_vec(),
+        })
+    }
+
+    /// True when `self` is `zone` itself or lies somewhere beneath it.
+    /// Every name is a subdomain of the root.
+    pub fn is_subdomain_of(&self, zone: &Name) -> bool {
+        self.labels.ends_with(&zone.labels)
+    }
+}
+
 impl fmt::Display for Name {
     /// Prints the fully qualified form, with the trailing dot.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -300,5 +321,25 @@ mod tests {
         for text in names {
             assert_eq!(Name::decode(&mut reader), Ok(name(text)));
         }
+    }
+
+    #[test]
+    fn walks_up_the_hierarchy() {
+        let www = name("www.example.com");
+        assert_eq!(www.label_count(), 3);
+        assert_eq!(www.parent(), Some(name("example.com")));
+        assert_eq!(name("com").parent(), Some(Name::root()));
+        assert_eq!(Name::root().parent(), None);
+    }
+
+    #[test]
+    fn knows_which_names_fall_inside_a_zone() {
+        let www = name("www.example.com");
+        assert!(www.is_subdomain_of(&name("example.com")));
+        assert!(www.is_subdomain_of(&www));
+        assert!(www.is_subdomain_of(&Name::root()));
+        assert!(!name("example.com").is_subdomain_of(&www));
+        // A shared suffix of characters is not a shared suffix of labels.
+        assert!(!name("badexample.com").is_subdomain_of(&name("example.com")));
     }
 }
