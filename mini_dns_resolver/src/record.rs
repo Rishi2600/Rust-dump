@@ -13,8 +13,31 @@ pub enum RData {
     Ns(Name),
     Cname(Name),
     Ptr(Name),
+    /// Mail server for the domain; lower preference values are tried first.
+    Mx {
+        preference: u16,
+        exchange: Name,
+    },
+    /// One or more character strings.
+    Txt(Vec<String>),
+    Soa(Soa),
     /// Data of a type this resolver does not interpret, kept as raw bytes.
     Other(Vec<u8>),
+}
+
+/// Start of authority: who runs a zone and how its copies stay in sync.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Soa {
+    /// The primary nameserver.
+    pub mname: Name,
+    /// The administrator's mailbox, with the `@` written as a dot.
+    pub rname: Name,
+    pub serial: u32,
+    pub refresh: u32,
+    pub retry: u32,
+    pub expire: u32,
+    /// How long a "no such name" answer may be cached.
+    pub minimum: u32,
 }
 
 /// A resource record: one fact about one name.
@@ -74,6 +97,30 @@ impl RData {
             RecordType::Ns => RData::Ns(Name::decode(reader)?),
             RecordType::Cname => RData::Cname(Name::decode(reader)?),
             RecordType::Ptr => RData::Ptr(Name::decode(reader)?),
+            RecordType::Mx => RData::Mx {
+                preference: reader.read_u16()?,
+                exchange: Name::decode(reader)?,
+            },
+            RecordType::Txt => {
+                // A sequence of strings, each prefixed by a one-byte length.
+                let end = reader.position() + length;
+                let mut strings = Vec::new();
+                while reader.position() < end {
+                    let len = usize::from(reader.read_u8()?);
+                    let bytes = reader.read_bytes(len)?;
+                    strings.push(String::from_utf8_lossy(bytes).into_owned());
+                }
+                RData::Txt(strings)
+            }
+            RecordType::Soa => RData::Soa(Soa {
+                mname: Name::decode(reader)?,
+                rname: Name::decode(reader)?,
+                serial: reader.read_u32()?,
+                refresh: reader.read_u32()?,
+                retry: reader.read_u32()?,
+                expire: reader.read_u32()?,
+                minimum: reader.read_u32()?,
+            }),
             _ => RData::Other(reader.read_bytes(length)?.to_vec()),
         })
     }
@@ -165,5 +212,37 @@ mod tests {
             decode(2, b"\x03ns1\xC0\x00\xFF"),
             Err(DnsError::BadRecord(_))
         ));
+    }
+
+    #[test]
+    fn decodes_mail_and_text_records() {
+        let mx = decode(15, b"\x00\x0A\x04mail\xC0\x00").unwrap();
+        let expected = RData::Mx {
+            preference: 10,
+            exchange: name("mail.example.com"),
+        };
+        assert_eq!(mx.data, expected);
+
+        let txt = decode(16, b"\x05hello\x02hi").unwrap();
+        assert_eq!(txt.data, RData::Txt(vec!["hello".into(), "hi".into()]));
+        // A string that claims more bytes than the record holds.
+        assert!(decode(16, b"\x09short").is_err());
+    }
+
+    #[test]
+    fn decodes_start_of_authority() {
+        let mut rdata = b"\x02ns\xC0\x00\x05admin\xC0\x00".to_vec();
+        for value in [2024010101u32, 7200, 3600, 1209600, 300] {
+            rdata.extend_from_slice(&value.to_be_bytes());
+        }
+        let RData::Soa(soa) = decode(6, &rdata).unwrap().data else {
+            panic!("expected SOA data");
+        };
+        assert_eq!(soa.mname, name("ns.example.com"));
+        assert_eq!(soa.rname, name("admin.example.com"));
+        assert_eq!(
+            (soa.serial, soa.refresh, soa.minimum),
+            (2024010101, 7200, 300)
+        );
     }
 }
