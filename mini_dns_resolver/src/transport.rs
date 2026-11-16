@@ -1,7 +1,8 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
+use std::io::{Read, Write};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, UdpSocket};
 use std::time::Duration;
 
-use crate::error::DnsResult;
+use crate::error::{DnsError, DnsResult};
 
 /// The well-known port DNS servers listen on.
 pub const DNS_PORT: u16 = 53;
@@ -53,10 +54,48 @@ impl Transport for UdpTransport {
     }
 }
 
+/// One query and reply over a TCP connection.
+///
+/// TCP is a stream of bytes with no message boundaries, so each DNS message
+/// is sent with a two-byte length in front of it.
+#[derive(Debug, Clone)]
+pub struct TcpTransport {
+    pub timeout: Duration,
+    pub port: u16,
+}
+
+impl TcpTransport {
+    pub fn new(timeout: Duration) -> Self {
+        Self {
+            timeout,
+            port: DNS_PORT,
+        }
+    }
+}
+
+impl Transport for TcpTransport {
+    fn exchange(&mut self, server: IpAddr, query: &[u8]) -> DnsResult<Vec<u8>> {
+        let length = u16::try_from(query.len())
+            .map_err(|_| DnsError::Io("query is too large to send".into()))?;
+        let address = SocketAddr::new(server, self.port);
+        let mut stream = TcpStream::connect_timeout(&address, self.timeout)?;
+        stream.set_read_timeout(Some(self.timeout))?;
+        stream.set_write_timeout(Some(self.timeout))?;
+        stream.write_all(&length.to_be_bytes())?;
+        stream.write_all(query)?;
+
+        let mut prefix = [0; 2];
+        stream.read_exact(&mut prefix)?;
+        let mut reply = vec![0; usize::from(u16::from_be_bytes(prefix))];
+        stream.read_exact(&mut reply)?;
+        Ok(reply)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::DnsError;
+    use std::net::TcpListener;
     use std::thread;
 
     const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -108,5 +147,52 @@ mod tests {
             transport.exchange(LOCALHOST, b"query"),
             Err(DnsError::Timeout)
         );
+    }
+
+    /// Answer the first connection with `reply` followed by an echo of the query.
+    fn serve_tcp(listener: TcpListener, reply: &'static [u8]) {
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut prefix = [0; 2];
+            stream.read_exact(&mut prefix).unwrap();
+            let mut query = vec![0; usize::from(u16::from_be_bytes(prefix))];
+            stream.read_exact(&mut query).unwrap();
+            let message = [reply, &query].concat();
+            stream
+                .write_all(&(message.len() as u16).to_be_bytes())
+                .unwrap();
+            stream.write_all(&message).unwrap();
+        });
+    }
+
+    #[test]
+    fn tcp_frames_each_message_with_its_length() {
+        let listener = TcpListener::bind((LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        serve_tcp(listener, b"reply:");
+        let mut transport = TcpTransport {
+            timeout: Duration::from_secs(2),
+            port,
+        };
+        let reply = transport.exchange(LOCALHOST, b"query");
+        assert_eq!(reply, Ok(b"reply:query".to_vec()));
+    }
+
+    #[test]
+    fn tcp_reports_a_closed_port_as_a_network_error() {
+        // Bind and immediately drop, so the port is known to be closed.
+        let port = TcpListener::bind((LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut transport = TcpTransport {
+            timeout: Duration::from_secs(2),
+            port,
+        };
+        assert!(matches!(
+            transport.exchange(LOCALHOST, b"query"),
+            Err(DnsError::Io(_))
+        ));
     }
 }
