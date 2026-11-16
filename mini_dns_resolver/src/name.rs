@@ -90,8 +90,17 @@ impl Name {
 impl Name {
     /// Write the wire form: each label prefixed by its length, then a zero
     /// byte standing for the root.
+    ///
+    /// If the rest of the name already appears earlier in the message, a
+    /// two-byte pointer to it is written instead of repeating the labels.
     pub fn encode(&self, writer: &mut Writer) {
-        for label in &self.labels {
+        for (index, label) in self.labels.iter().enumerate() {
+            let suffix = &self.labels[index..];
+            if let Some(offset) = writer.name_offset(suffix) {
+                writer.write_u16(0xC000 | offset);
+                return;
+            }
+            writer.remember_name(suffix);
             writer.write_u8(label.len() as u8);
             writer.write_bytes(label);
         }
@@ -267,5 +276,29 @@ mod tests {
         // Reserved label types and truncated data.
         assert_eq!(decode(b"\x40"), Err(DnsError::BadLabel(0x40)));
         assert_eq!(decode(b"\x03ww"), Err(DnsError::UnexpectedEof));
+    }
+
+    #[test]
+    fn repeated_suffixes_are_replaced_by_pointers() {
+        let names = [
+            "example.com.",
+            "www.example.com.",
+            "mail.example.com.",
+            "com.",
+        ];
+        let mut writer = Writer::new();
+        for text in names {
+            name(text).encode(&mut writer);
+        }
+        let bytes = writer.finish();
+        // `example.com.` takes 13 bytes; `com` starts at offset 8 inside it.
+        assert_eq!(bytes[13..19], *b"\x03www\xC0\x00");
+        assert_eq!(bytes[19..26], *b"\x04mail\xC0\x00");
+        assert_eq!(bytes[26..], [0xC0, 8]);
+
+        let mut reader = Reader::new(&bytes);
+        for text in names {
+            assert_eq!(Name::decode(&mut reader), Ok(name(text)));
+        }
     }
 }

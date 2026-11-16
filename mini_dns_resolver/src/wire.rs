@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::error::{DnsError, DnsResult};
 
 /// Cursor over the bytes of a message.
@@ -63,6 +65,8 @@ impl<'a> Reader<'a> {
 #[derive(Debug, Default)]
 pub struct Writer {
     buf: Vec<u8>,
+    /// Where each name suffix was first written, for compression.
+    names: HashMap<Vec<Vec<u8>>, u16>,
 }
 
 impl Writer {
@@ -98,6 +102,23 @@ impl Writer {
 
     pub fn finish(self) -> Vec<u8> {
         self.buf
+    }
+}
+
+impl Writer {
+    /// Offset of an earlier copy of this run of labels, if there is one.
+    pub fn name_offset(&self, suffix: &[Vec<u8>]) -> Option<u16> {
+        self.names.get(suffix).copied()
+    }
+
+    /// Record that this run of labels is about to be written here.
+    pub fn remember_name(&mut self, suffix: &[Vec<u8>]) {
+        // A pointer has only 14 bits, so later offsets cannot be referenced.
+        if let Ok(offset) = u16::try_from(self.buf.len()) {
+            if offset < 0x4000 {
+                self.names.entry(suffix.to_vec()).or_insert(offset);
+            }
+        }
     }
 }
 
