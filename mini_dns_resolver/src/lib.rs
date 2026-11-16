@@ -2,4 +2,5 @@
 
 pub mod error;
 pub mod name;
+pub mod rtype;
 pub mod wire;
