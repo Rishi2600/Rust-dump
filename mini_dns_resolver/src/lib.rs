@@ -2,6 +2,7 @@
 
 pub mod error;
 pub mod header;
+pub mod ids;
 pub mod message;
 pub mod name;
 pub mod question;
