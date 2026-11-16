@@ -9,6 +9,7 @@ pub mod message;
 pub mod name;
 pub mod question;
 pub mod record;
+pub mod resolver;
 pub mod roots;
 pub mod rtype;
 pub mod transport;
