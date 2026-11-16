@@ -59,6 +59,48 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// Builds the bytes of an outgoing message.
+#[derive(Debug, Default)]
+pub struct Writer {
+    buf: Vec<u8>,
+}
+
+impl Writer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Offset at which the next byte will be written.
+    pub fn position(&self) -> usize {
+        self.buf.len()
+    }
+
+    pub fn write_u8(&mut self, value: u8) {
+        self.buf.push(value);
+    }
+
+    pub fn write_u16(&mut self, value: u16) {
+        self.buf.extend_from_slice(&value.to_be_bytes());
+    }
+
+    pub fn write_u32(&mut self, value: u32) {
+        self.buf.extend_from_slice(&value.to_be_bytes());
+    }
+
+    pub fn write_bytes(&mut self, bytes: &[u8]) {
+        self.buf.extend_from_slice(bytes);
+    }
+
+    /// Overwrite a `u16` written earlier, to fill in a length once it is known.
+    pub fn set_u16(&mut self, pos: usize, value: u16) {
+        self.buf[pos..pos + 2].copy_from_slice(&value.to_be_bytes());
+    }
+
+    pub fn finish(self) -> Vec<u8> {
+        self.buf
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +123,29 @@ mod tests {
         assert_eq!(reader.seek(1), Ok(()));
         assert_eq!(reader.read_u8(), Ok(2));
         assert_eq!(reader.read_bytes(1), Ok(&[3][..]));
+    }
+
+    #[test]
+    fn writes_big_endian_integers() {
+        let mut writer = Writer::new();
+        writer.write_u16(0x1234);
+        writer.write_u32(3600);
+        writer.write_u8(0xFF);
+        writer.write_bytes(b"ok");
+        assert_eq!(writer.position(), 9);
+        assert_eq!(
+            writer.finish(),
+            [0x12, 0x34, 0, 0, 0x0E, 0x10, 0xFF, b'o', b'k']
+        );
+    }
+
+    #[test]
+    fn a_length_can_be_filled_in_after_the_data() {
+        let mut writer = Writer::new();
+        let length_at = writer.position();
+        writer.write_u16(0);
+        writer.write_bytes(b"abc");
+        writer.set_u16(length_at, 3);
+        assert_eq!(writer.finish(), [0, 3, b'a', b'b', b'c']);
     }
 }
