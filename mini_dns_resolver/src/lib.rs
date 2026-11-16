@@ -4,5 +4,6 @@ pub mod error;
 pub mod header;
 pub mod name;
 pub mod question;
+pub mod record;
 pub mod rtype;
 pub mod wire;
