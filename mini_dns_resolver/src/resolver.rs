@@ -119,11 +119,27 @@ impl<T: Transport> Resolver<T> {
         if depth > self.config.max_depth {
             return Err(DnsError::DepthExceeded);
         }
-        match self.lookup(name, rtype, depth)? {
-            Outcome::Answer(records) => Ok(records),
-            Outcome::Alias { chain, .. } => Ok(chain),
-            _ => Ok(Vec::new()),
+        // A CNAME means "the answer is under this other name". Each one
+        // restarts the walk at its target, keeping the alias in the result.
+        let mut target = name.clone();
+        let mut records = Vec::new();
+        for _ in 0..=self.config.max_cnames {
+            match self.lookup(&target, rtype, depth)? {
+                Outcome::Alias {
+                    target: next,
+                    chain,
+                } => {
+                    records.extend(chain);
+                    target = next;
+                }
+                Outcome::Answer(found) => {
+                    records.extend(found);
+                    return Ok(records);
+                }
+                _ => return Ok(records),
+            }
         }
+        Err(DnsError::TooManyCnames)
     }
 
     /// Follow referrals until some server gives a final reply for `name`.

@@ -381,3 +381,47 @@ fn nested_nameserver_lookups_are_bounded() {
     let result = resolver.resolve(&name("store.glueless.com"), RecordType::A);
     assert_eq!(result, Err(DnsError::NoNameservers("glueless.com.".into())));
 }
+
+#[test]
+fn an_alias_in_the_same_zone_comes_back_with_its_target() {
+    let mut resolver = resolver();
+    let records = resolver.resolve(&name("blog.example.com"), RecordType::A);
+    let expected = vec![
+        cname("blog.example.com", "www.example.com"),
+        a("www.example.com", [203, 0, 113, 10]),
+    ];
+    assert_eq!(records, Ok(expected));
+    // The server chased the alias itself, so no extra queries were needed.
+    assert_eq!(resolver.transport().asked(), [ROOT, COM, EXAMPLE_NS1]);
+}
+
+#[test]
+fn an_alias_into_another_zone_is_resolved_from_the_root_again() {
+    let mut resolver = resolver();
+    let records = resolver.resolve(&name("shop.example.com"), RecordType::A);
+    // The example.com server also offered 6.6.6.6 for the target. It has no
+    // authority over glueless.com, so that claim was thrown away.
+    let expected = vec![
+        cname("shop.example.com", "store.glueless.com"),
+        a("store.glueless.com", [203, 0, 113, 50]),
+    ];
+    assert_eq!(records, Ok(expected));
+    assert_eq!(resolver.transport().asked().last(), Some(&GLUELESS));
+}
+
+#[test]
+fn asking_for_the_alias_itself_does_not_follow_it() {
+    let mut resolver = resolver();
+    let records = resolver.resolve(&name("blog.example.com"), RecordType::Cname);
+    assert_eq!(
+        records,
+        Ok(vec![cname("blog.example.com", "www.example.com")])
+    );
+}
+
+#[test]
+fn an_alias_loop_is_cut_off() {
+    let mut resolver = resolver();
+    let result = resolver.resolve(&name("loop1.example.com"), RecordType::A);
+    assert_eq!(result, Err(DnsError::TooManyCnames));
+}
