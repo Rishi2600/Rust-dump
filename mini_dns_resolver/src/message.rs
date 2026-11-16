@@ -1,0 +1,109 @@
+use crate::error::DnsResult;
+use crate::header::{Counts, Header};
+use crate::question::Question;
+use crate::record::Record;
+use crate::wire::{Reader, Writer};
+
+/// A complete DNS message. Queries and responses share this one layout:
+/// a header, the question, and three lists of records.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Message {
+    pub header: Header,
+    pub questions: Vec<Question>,
+    /// Records that answer the question.
+    pub answers: Vec<Record>,
+    /// Records naming the servers that are authoritative for the answer.
+    pub authorities: Vec<Record>,
+    /// Extra records the server thought would save a follow-up query.
+    pub additionals: Vec<Record>,
+}
+
+impl Message {
+    pub fn decode(bytes: &[u8]) -> DnsResult<Self> {
+        let mut reader = Reader::new(bytes);
+        let (header, counts) = Header::decode(&mut reader)?;
+        let mut message = Message {
+            header,
+            ..Message::default()
+        };
+        for _ in 0..counts.questions {
+            message.questions.push(Question::decode(&mut reader)?);
+        }
+        for _ in 0..counts.answers {
+            message.answers.push(Record::decode(&mut reader)?);
+        }
+        for _ in 0..counts.authorities {
+            message.authorities.push(Record::decode(&mut reader)?);
+        }
+        for _ in 0..counts.additionals {
+            message.additionals.push(Record::decode(&mut reader)?);
+        }
+        Ok(message)
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let counts = Counts {
+            questions: self.questions.len() as u16,
+            answers: self.answers.len() as u16,
+            authorities: self.authorities.len() as u16,
+            additionals: self.additionals.len() as u16,
+        };
+        let mut writer = Writer::new();
+        self.header.encode(counts, &mut writer);
+        for question in &self.questions {
+            question.encode(&mut writer);
+        }
+        let sections = [&self.answers, &self.authorities, &self.additionals];
+        for record in sections.into_iter().flatten() {
+            record.encode(&mut writer);
+        }
+        writer.finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::DnsError;
+    use crate::name::Name;
+    use crate::record::RData;
+    use crate::rtype::RecordType;
+
+    /// A real-shaped reply to "example.com A": the answer's owner name is a
+    /// pointer back to the name in the question at offset 12.
+    const REPLY: &[u8] = b"\x12\x34\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00\
+        \x07example\x03com\x00\x00\x01\x00\x01\
+        \xC0\x0C\x00\x01\x00\x01\x00\x00\x0E\x10\x00\x04\x5D\xB8\xD8\x22";
+
+    #[test]
+    fn decodes_a_compressed_reply() {
+        let message = Message::decode(REPLY).unwrap();
+        let example = Name::parse("example.com").unwrap();
+        assert!(message.header.response);
+        assert_eq!(message.header.id, 0x1234);
+        assert_eq!(
+            message.questions,
+            [Question::new(example.clone(), RecordType::A)]
+        );
+        let address = RData::A("93.184.216.34".parse().unwrap());
+        assert_eq!(
+            message.answers,
+            [Record::new(example, RecordType::A, 3600, address)]
+        );
+        assert!(message.authorities.is_empty() && message.additionals.is_empty());
+    }
+
+    #[test]
+    fn encoding_reproduces_the_original_bytes() {
+        let message = Message::decode(REPLY).unwrap();
+        assert_eq!(message.encode(), REPLY);
+    }
+
+    #[test]
+    fn a_count_larger_than_the_message_is_an_error() {
+        let mut bytes = REPLY.to_vec();
+        bytes[7] = 2; // claim two answers
+        assert_eq!(Message::decode(&bytes), Err(DnsError::UnexpectedEof));
+        assert_eq!(Message::decode(&REPLY[..5]), Err(DnsError::UnexpectedEof));
+    }
+}
