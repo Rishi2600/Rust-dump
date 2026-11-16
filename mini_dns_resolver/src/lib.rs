@@ -7,4 +7,5 @@ pub mod name;
 pub mod question;
 pub mod record;
 pub mod rtype;
+pub mod transport;
 pub mod wire;
