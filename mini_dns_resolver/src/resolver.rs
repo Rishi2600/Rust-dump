@@ -5,7 +5,7 @@ use crate::error::{DnsError, DnsResult};
 use crate::ids::IdGenerator;
 use crate::message::Message;
 use crate::name::Name;
-use crate::record::Record;
+use crate::record::{RData, Record};
 use crate::roots::root_addresses;
 use crate::rtype::RecordType;
 use crate::transport::Transport;
@@ -105,7 +105,21 @@ impl<T: Transport> Resolver<T> {
     ///
     /// An empty list means the name exists but has no records of this type.
     pub fn resolve(&mut self, name: &Name, rtype: RecordType) -> DnsResult<Vec<Record>> {
-        match self.lookup(name, rtype)? {
+        self.resolve_nested(name, rtype, 0)
+    }
+
+    /// `depth` counts how many nameserver-address lookups this one is nested
+    /// inside, so that zones depending on each other cannot recurse forever.
+    fn resolve_nested(
+        &mut self,
+        name: &Name,
+        rtype: RecordType,
+        depth: usize,
+    ) -> DnsResult<Vec<Record>> {
+        if depth > self.config.max_depth {
+            return Err(DnsError::DepthExceeded);
+        }
+        match self.lookup(name, rtype, depth)? {
             Outcome::Answer(records) => Ok(records),
             Outcome::Alias { chain, .. } => Ok(chain),
             _ => Ok(Vec::new()),
@@ -113,12 +127,12 @@ impl<T: Transport> Resolver<T> {
     }
 
     /// Follow referrals until some server gives a final reply for `name`.
-    fn lookup(&mut self, name: &Name, rtype: RecordType) -> DnsResult<Outcome> {
+    fn lookup(&mut self, name: &Name, rtype: RecordType, depth: usize) -> DnsResult<Outcome> {
         let (mut zone, mut servers) = (Name::root(), self.config.roots.clone());
         for _ in 0..self.config.max_referrals {
             match self.ask(&servers, &zone, name, rtype)? {
                 Outcome::Referral(referral) => {
-                    servers = self.nameserver_addresses(&referral)?;
+                    servers = self.nameserver_addresses(&referral, depth)?;
                     zone = referral.zone;
                 }
                 Outcome::NxDomain => return Err(DnsError::NxDomain(name.to_string())),
@@ -170,8 +184,31 @@ impl<T: Transport> Resolver<T> {
     }
 
     /// Addresses of the servers a referral points at.
-    fn nameserver_addresses(&mut self, referral: &Referral) -> DnsResult<Vec<IpAddr>> {
-        let addresses = referral.glue_addresses();
+    ///
+    /// A parent normally supplies them as glue. When it does not, the
+    /// nameservers live in some unrelated zone and their addresses have to be
+    /// resolved like any other name, with a fresh walk from the root.
+    fn nameserver_addresses(
+        &mut self,
+        referral: &Referral,
+        depth: usize,
+    ) -> DnsResult<Vec<IpAddr>> {
+        let mut addresses = referral.glue_addresses();
+        if addresses.is_empty() {
+            for host in referral.nameserver_names() {
+                let Ok(records) = self.resolve_nested(&host, RecordType::A, depth + 1) else {
+                    continue;
+                };
+                addresses.extend(records.iter().filter_map(|record| match record.data {
+                    RData::A(address) => Some(IpAddr::V4(address)),
+                    _ => None,
+                }));
+                // One reachable nameserver is enough to carry on.
+                if !addresses.is_empty() {
+                    break;
+                }
+            }
+        }
         if addresses.is_empty() {
             return Err(DnsError::NoNameservers(referral.zone.to_string()));
         }

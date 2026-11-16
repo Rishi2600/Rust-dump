@@ -354,3 +354,30 @@ fn a_server_that_refers_back_up_the_tree_is_rejected() {
     assert!(matches!(result, Err(DnsError::ServerFailure(_))));
     assert_eq!(resolver.transport().asked(), [ROOT, COM, BOUNCE]);
 }
+
+#[test]
+fn a_delegation_without_glue_triggers_a_lookup_of_the_nameserver() {
+    let mut resolver = resolver();
+    let records = resolver.resolve(&name("store.glueless.com"), RecordType::A);
+    assert_eq!(
+        records,
+        Ok(vec![a("store.glueless.com", [203, 0, 113, 50])])
+    );
+
+    // The walk for the original name pauses at COM while a second walk
+    // finds the address of ns1.dns-host.net, then resumes.
+    let net = resolver.transport();
+    assert_eq!(net.asked(), [ROOT, COM, ROOT, NET, DNS_HOST, GLUELESS]);
+    assert_eq!(net.queries[4], (DNS_HOST, question("ns1.dns-host.net.")));
+}
+
+#[test]
+fn nested_nameserver_lookups_are_bounded() {
+    let shallow = Config {
+        max_depth: 0,
+        ..config()
+    };
+    let mut resolver = Resolver::new(internet(), shallow);
+    let result = resolver.resolve(&name("store.glueless.com"), RecordType::A);
+    assert_eq!(result, Err(DnsError::NoNameservers("glueless.com.".into())));
+}
