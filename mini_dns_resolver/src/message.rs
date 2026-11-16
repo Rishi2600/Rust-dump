@@ -1,7 +1,9 @@
 use crate::error::DnsResult;
 use crate::header::{Counts, Header};
+use crate::name::Name;
 use crate::question::Question;
 use crate::record::Record;
+use crate::rtype::RecordType;
 use crate::wire::{Reader, Writer};
 
 /// A complete DNS message. Queries and responses share this one layout:
@@ -61,13 +63,28 @@ impl Message {
     }
 }
 
+impl Message {
+    /// A query for one name and type.
+    ///
+    /// Recursion is not requested: the caller is expected to follow referrals
+    /// itself. Set `header.recursion_desired` to hand that work to the server.
+    pub fn query(id: u16, name: Name, rtype: RecordType) -> Self {
+        Message {
+            header: Header {
+                id,
+                ..Header::default()
+            },
+            questions: vec![Question::new(name, rtype)],
+            ..Message::default()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::DnsError;
-    use crate::name::Name;
     use crate::record::RData;
-    use crate::rtype::RecordType;
 
     /// A real-shaped reply to "example.com A": the answer's owner name is a
     /// pointer back to the name in the question at offset 12.
@@ -105,5 +122,15 @@ mod tests {
         bytes[7] = 2; // claim two answers
         assert_eq!(Message::decode(&bytes), Err(DnsError::UnexpectedEof));
         assert_eq!(Message::decode(&REPLY[..5]), Err(DnsError::UnexpectedEof));
+    }
+
+    #[test]
+    fn builds_the_bytes_of_a_query() {
+        let query = Message::query(0xABCD, Name::parse("example.com").unwrap(), RecordType::A);
+        assert_eq!(
+            query.encode(),
+            b"\xAB\xCD\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\
+              \x07example\x03com\x00\x00\x01\x00\x01"
+        );
     }
 }
