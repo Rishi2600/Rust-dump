@@ -158,7 +158,8 @@ impl<T: Transport> Resolver<T> {
         Err(DnsError::TooManyReferrals)
     }
 
-    /// Put the question to the servers of `zone`.
+    /// Put the question to the servers of `zone`, moving on to the next one
+    /// whenever a server is unreachable or misbehaves.
     fn ask(
         &mut self,
         servers: &[IpAddr],
@@ -166,10 +167,14 @@ impl<T: Transport> Resolver<T> {
         name: &Name,
         rtype: RecordType,
     ) -> DnsResult<Outcome> {
-        match servers.first() {
-            Some(&server) => self.ask_one(server, zone, name, rtype),
-            None => Err(DnsError::NoNameservers(zone.to_string())),
+        let mut last_error = DnsError::NoNameservers(zone.to_string());
+        for &server in servers {
+            match self.ask_one(server, zone, name, rtype) {
+                Ok(outcome) => return Ok(outcome),
+                Err(error) => last_error = error,
+            }
         }
+        Err(last_error)
     }
 
     /// Put the question to one server of `zone` and work out what its reply

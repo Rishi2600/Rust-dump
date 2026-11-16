@@ -140,6 +140,10 @@ struct FakeNet {
     /// Every query received: the server's last address byte and the question.
     queries: Vec<(u8, String)>,
     last_query: Option<Message>,
+    /// Servers that never reply.
+    down: Vec<u8>,
+    /// Servers that answer every question with REFUSED.
+    refusing: Vec<u8>,
 }
 
 impl FakeNet {
@@ -160,7 +164,16 @@ impl Transport for FakeNet {
         self.queries
             .push((last, format!("{} {}", question.name, question.rtype)));
         // An address nobody listens on behaves like a dead server.
-        let reply = self.servers.get(&server).map(|zone| zone.answer(&query));
+        let alive = !self.down.contains(&last);
+        let zone = self.servers.get(&server).filter(|_| alive);
+        let mut reply = zone.map(|zone| zone.answer(&query));
+        if self.refusing.contains(&last) {
+            reply = reply.map(|mut message| {
+                message.header.rcode = Rcode::Refused;
+                message.answers.clear();
+                message
+            });
+        }
         self.last_query = Some(query);
         reply
             .map(|message| message.encode())
@@ -424,4 +437,54 @@ fn an_alias_loop_is_cut_off() {
     let mut resolver = resolver();
     let result = resolver.resolve(&name("loop1.example.com"), RecordType::A);
     assert_eq!(result, Err(DnsError::TooManyCnames));
+}
+
+#[test]
+fn a_dead_nameserver_is_skipped_for_the_next_one() {
+    let net = FakeNet {
+        down: vec![EXAMPLE_NS1],
+        ..internet()
+    };
+    let mut resolver = Resolver::new(net, config());
+    let records = resolver.resolve(&name("www.example.com"), RecordType::A);
+    assert_eq!(records, Ok(vec![a("www.example.com", [203, 0, 113, 10])]));
+    assert_eq!(
+        resolver.transport().asked(),
+        [ROOT, COM, EXAMPLE_NS1, EXAMPLE_NS2]
+    );
+}
+
+#[test]
+fn a_refusing_nameserver_is_skipped_for_the_next_one() {
+    let net = FakeNet {
+        refusing: vec![EXAMPLE_NS1],
+        ..internet()
+    };
+    let mut resolver = Resolver::new(net, config());
+    let records = resolver.resolve(&name("www.example.com"), RecordType::A);
+    assert_eq!(records, Ok(vec![a("www.example.com", [203, 0, 113, 10])]));
+    assert_eq!(resolver.transport().asked().last(), Some(&EXAMPLE_NS2));
+}
+
+#[test]
+fn the_last_error_is_reported_when_every_nameserver_fails() {
+    let net = FakeNet {
+        down: vec![EXAMPLE_NS1, EXAMPLE_NS2],
+        ..internet()
+    };
+    let mut resolver = Resolver::new(net, config());
+    let result = resolver.resolve(&name("www.example.com"), RecordType::A);
+    assert_eq!(result, Err(DnsError::Timeout));
+}
+
+#[test]
+fn a_dead_root_server_is_skipped_too() {
+    let two_roots = Config {
+        roots: vec![ip(99), ip(ROOT)],
+        ..config()
+    };
+    let mut resolver = Resolver::new(internet(), two_roots);
+    let records = resolver.resolve(&name("www.example.com"), RecordType::A);
+    assert!(records.is_ok());
+    assert_eq!(resolver.transport().asked(), [99, ROOT, COM, EXAMPLE_NS1]);
 }
