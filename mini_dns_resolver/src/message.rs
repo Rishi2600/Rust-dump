@@ -2,7 +2,7 @@ use crate::error::DnsResult;
 use crate::header::{Counts, Header};
 use crate::name::Name;
 use crate::question::Question;
-use crate::record::Record;
+use crate::record::{RData, Record};
 use crate::rtype::RecordType;
 use crate::wire::{Reader, Writer};
 
@@ -80,11 +80,35 @@ impl Message {
     }
 }
 
+impl Message {
+    /// Advertise EDNS: this client can take UDP replies of up to `payload`
+    /// bytes, instead of the original limit of 512.
+    pub fn with_edns(mut self, payload: u16) -> Self {
+        // OPT is a pseudo-record owned by the root. Its class field is reused
+        // to carry the payload size, and its TTL field carries flags.
+        self.additionals.push(Record {
+            name: Name::root(),
+            rtype: RecordType::Opt,
+            class: payload,
+            ttl: 0,
+            data: RData::Other(Vec::new()),
+        });
+        self
+    }
+
+    /// The UDP payload size the sender advertised, if it used EDNS.
+    pub fn edns_payload(&self) -> Option<u16> {
+        self.additionals
+            .iter()
+            .find(|record| record.rtype == RecordType::Opt)
+            .map(|record| record.class)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::DnsError;
-    use crate::record::RData;
 
     /// A real-shaped reply to "example.com A": the answer's owner name is a
     /// pointer back to the name in the question at offset 12.
@@ -132,5 +156,17 @@ mod tests {
             b"\xAB\xCD\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\
               \x07example\x03com\x00\x00\x01\x00\x01"
         );
+    }
+
+    #[test]
+    fn edns_adds_an_opt_record_carrying_the_payload_size() {
+        let plain = Message::query(1, Name::parse("example.com").unwrap(), RecordType::A);
+        assert_eq!(plain.edns_payload(), None);
+
+        let bytes = plain.with_edns(1232).encode();
+        assert_eq!(bytes[10..12], [0, 1], "one additional record");
+        // Root name, type 41, "class" 1232, TTL 0, no data.
+        assert!(bytes.ends_with(b"\x00\x00\x29\x04\xD0\x00\x00\x00\x00\x00\x00"));
+        assert_eq!(Message::decode(&bytes).unwrap().edns_payload(), Some(1232));
     }
 }
