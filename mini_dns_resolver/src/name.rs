@@ -2,7 +2,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use crate::error::{DnsError, DnsResult};
-use crate::wire::Writer;
+use crate::wire::{Reader, Writer};
 
 /// Longest single label, in bytes.
 pub const MAX_LABEL_LEN: usize = 63;
@@ -99,6 +99,51 @@ impl Name {
     }
 }
 
+/// More pointer hops than any honest message needs.
+const MAX_POINTER_JUMPS: usize = 32;
+
+impl Name {
+    /// Read a name, following compression pointers.
+    ///
+    /// A length byte whose top two bits are set is not a length at all: with
+    /// the next byte it forms a 14-bit offset to where the rest of the name
+    /// was already written earlier in the message. The reader is left just
+    /// after the name as it appears at the starting position.
+    pub fn decode(reader: &mut Reader<'_>) -> DnsResult<Self> {
+        let mut labels = Vec::new();
+        let mut resume_at = None;
+        let mut jumps = 0;
+        loop {
+            let at = reader.position();
+            let len = reader.read_u8()?;
+            match len & 0xC0 {
+                0x00 if len == 0 => break,
+                0x00 => labels.push(reader.read_bytes(usize::from(len))?.to_vec()),
+                0xC0 => {
+                    let low = reader.read_u8()?;
+                    let target = usize::from(len & 0x3F) << 8 | usize::from(low);
+                    // Pointers may only refer to earlier data. Together with the
+                    // hop limit this makes a malicious loop impossible.
+                    if target >= at {
+                        return Err(DnsError::BadPointer(target));
+                    }
+                    jumps += 1;
+                    if jumps > MAX_POINTER_JUMPS {
+                        return Err(DnsError::CompressionLoop);
+                    }
+                    resume_at.get_or_insert(reader.position());
+                    reader.seek(target)?;
+                }
+                _ => return Err(DnsError::BadLabel(len)),
+            }
+        }
+        if let Some(pos) = resume_at {
+            reader.seek(pos)?;
+        }
+        Self::from_labels(labels)
+    }
+}
+
 impl fmt::Display for Name {
     /// Prints the fully qualified form, with the trailing dot.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -189,5 +234,38 @@ mod tests {
         );
         assert_eq!(bytes.len(), name("www.example.com").wire_len());
         assert_eq!(encoded(&Name::root()), [0]);
+    }
+
+    #[test]
+    fn decodes_what_it_encodes() {
+        let bytes = encoded(&name("Mail.Example.COM"));
+        let mut reader = Reader::new(&bytes);
+        assert_eq!(Name::decode(&mut reader), Ok(name("mail.example.com")));
+        assert_eq!(reader.remaining(), 0);
+    }
+
+    #[test]
+    fn follows_a_compression_pointer_and_resumes_after_it() {
+        // `example.com.` at offset 0, then `www` + a pointer back to offset 0.
+        let mut bytes = b"\x07example\x03com\x00".to_vec();
+        bytes.extend_from_slice(b"\x03www\xC0\x00\xAB");
+        let mut reader = Reader::new(&bytes);
+        reader.seek(13).unwrap();
+        assert_eq!(Name::decode(&mut reader), Ok(name("www.example.com")));
+        // The reader continues after the two pointer bytes, not after the target.
+        assert_eq!(reader.read_u8(), Ok(0xAB));
+    }
+
+    #[test]
+    fn rejects_hostile_or_broken_encodings() {
+        let decode = |bytes: &[u8]| Name::decode(&mut Reader::new(bytes));
+        // A pointer to itself or forwards.
+        assert_eq!(decode(b"\xC0\x00"), Err(DnsError::BadPointer(0)));
+        assert_eq!(decode(b"\xC0\x05"), Err(DnsError::BadPointer(5)));
+        // A label followed by a pointer back to that label, forever.
+        assert_eq!(decode(b"\x01a\xC0\x00"), Err(DnsError::CompressionLoop));
+        // Reserved label types and truncated data.
+        assert_eq!(decode(b"\x40"), Err(DnsError::BadLabel(0x40)));
+        assert_eq!(decode(b"\x03ww"), Err(DnsError::UnexpectedEof));
     }
 }
