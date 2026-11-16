@@ -10,6 +10,9 @@ use crate::wire::Reader;
 pub enum RData {
     A(Ipv4Addr),
     Aaaa(Ipv6Addr),
+    Ns(Name),
+    Cname(Name),
+    Ptr(Name),
     /// Data of a type this resolver does not interpret, kept as raw bytes.
     Other(Vec<u8>),
 }
@@ -68,6 +71,9 @@ impl RData {
         Ok(match rtype {
             RecordType::A => RData::A(Ipv4Addr::from(fixed::<4>(rtype, length, reader)?)),
             RecordType::Aaaa => RData::Aaaa(Ipv6Addr::from(fixed::<16>(rtype, length, reader)?)),
+            RecordType::Ns => RData::Ns(Name::decode(reader)?),
+            RecordType::Cname => RData::Cname(Name::decode(reader)?),
+            RecordType::Ptr => RData::Ptr(Name::decode(reader)?),
             _ => RData::Other(reader.read_bytes(length)?.to_vec()),
         })
     }
@@ -143,5 +149,21 @@ mod tests {
         bytes.truncate(bytes.len() - 1);
         let truncated = Record::decode(&mut Reader::new(&bytes));
         assert_eq!(truncated, Err(DnsError::UnexpectedEof));
+    }
+
+    #[test]
+    fn decodes_records_whose_data_is_a_name() {
+        // The data points back at the owner name at offset 0 of the message.
+        let ns = decode(2, b"\x03ns1\xC0\x00").unwrap();
+        assert_eq!(ns.data, RData::Ns(name("ns1.example.com")));
+        let cname = decode(5, b"\x03www\xC0\x00").unwrap();
+        assert_eq!(cname.data, RData::Cname(name("www.example.com")));
+        let ptr = decode(12, b"\x04host\x04test\x00").unwrap();
+        assert_eq!(ptr.data, RData::Ptr(name("host.test")));
+        // A name that stops short of the declared data length.
+        assert!(matches!(
+            decode(2, b"\x03ns1\xC0\x00\xFF"),
+            Err(DnsError::BadRecord(_))
+        ));
     }
 }
