@@ -1,5 +1,7 @@
 use std::net::IpAddr;
+use std::time::Instant;
 
+use crate::cache::Cache;
 use crate::classify::{Outcome, Referral, classify};
 use crate::error::{DnsError, DnsResult};
 use crate::ids::IdGenerator;
@@ -43,6 +45,7 @@ pub struct Resolver<T> {
     transport: T,
     config: Config,
     ids: IdGenerator,
+    cache: Cache,
 }
 
 impl<T: Transport> Resolver<T> {
@@ -51,6 +54,7 @@ impl<T: Transport> Resolver<T> {
             transport,
             config,
             ids: IdGenerator::new(),
+            cache: Cache::new(),
         }
     }
 
@@ -124,15 +128,30 @@ impl<T: Transport> Resolver<T> {
         let mut target = name.clone();
         let mut records = Vec::new();
         for _ in 0..=self.config.max_cnames {
+            // Anything still fresh in the cache saves a trip to the network.
+            let now = Instant::now();
+            if let Some(cached) = self.cache.get(&target, rtype, now) {
+                records.extend(cached);
+                return Ok(records);
+            }
+            let alias = self.cache.get(&target, RecordType::Cname, now);
+            if let Some(RData::Cname(next)) = alias.iter().flatten().map(|r| &r.data).next() {
+                target = next.clone();
+                records.extend(alias.unwrap_or_default());
+                continue;
+            }
+
             match self.lookup(&target, rtype, depth)? {
                 Outcome::Alias {
                     target: next,
                     chain,
                 } => {
+                    self.cache.insert(&chain, now);
                     records.extend(chain);
                     target = next;
                 }
                 Outcome::Answer(found) => {
+                    self.cache.insert(&found, now);
                     records.extend(found);
                     return Ok(records);
                 }
@@ -144,10 +163,15 @@ impl<T: Transport> Resolver<T> {
 
     /// Follow referrals until some server gives a final reply for `name`.
     fn lookup(&mut self, name: &Name, rtype: RecordType, depth: usize) -> DnsResult<Outcome> {
-        let (mut zone, mut servers) = (Name::root(), self.config.roots.clone());
+        let (mut zone, mut servers) = self.closest_known_servers(name);
         for _ in 0..self.config.max_referrals {
             match self.ask(&servers, &zone, name, rtype)? {
                 Outcome::Referral(referral) => {
+                    // Remember the delegation: the next name in this zone can
+                    // then skip every level above it.
+                    let now = Instant::now();
+                    self.cache.insert(&referral.nameservers, now);
+                    self.cache.insert(&referral.glue, now);
                     servers = self.nameserver_addresses(&referral, depth)?;
                     zone = referral.zone;
                 }
@@ -234,6 +258,41 @@ impl<T: Transport> Resolver<T> {
             return Err(DnsError::NoNameservers(referral.zone.to_string()));
         }
         Ok(addresses)
+    }
+}
+
+impl<T: Transport> Resolver<T> {
+    pub fn cache(&self) -> &Cache {
+        &self.cache
+    }
+
+    /// The deepest zone containing `name` whose nameserver addresses are
+    /// cached, or the root servers when nothing closer is known.
+    fn closest_known_servers(&self, name: &Name) -> (Name, Vec<IpAddr>) {
+        let now = Instant::now();
+        let mut candidate = Some(name.clone());
+        while let Some(zone) = candidate {
+            let nameservers = self
+                .cache
+                .get(&zone, RecordType::Ns, now)
+                .unwrap_or_default();
+            let hosts = nameservers.iter().filter_map(|record| match &record.data {
+                RData::Ns(host) => self.cache.get(host, RecordType::A, now),
+                _ => None,
+            });
+            let addresses: Vec<IpAddr> = hosts
+                .flatten()
+                .filter_map(|record| match record.data {
+                    RData::A(address) => Some(IpAddr::V4(address)),
+                    _ => None,
+                })
+                .collect();
+            if !addresses.is_empty() {
+                return (zone, addresses);
+            }
+            candidate = zone.parent();
+        }
+        (Name::root(), self.config.roots.clone())
     }
 }
 

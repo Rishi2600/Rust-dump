@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
+use std::time::Instant;
 
 use mini_dns_resolver::error::{DnsError, DnsResult};
 use mini_dns_resolver::header::{Header, Rcode};
@@ -487,4 +488,68 @@ fn a_dead_root_server_is_skipped_too() {
     let records = resolver.resolve(&name("www.example.com"), RecordType::A);
     assert!(records.is_ok());
     assert_eq!(resolver.transport().asked(), [99, ROOT, COM, EXAMPLE_NS1]);
+}
+
+#[test]
+fn a_repeated_question_is_answered_from_the_cache() {
+    let mut resolver = resolver();
+    let first = resolver.resolve(&name("www.example.com"), RecordType::A);
+    let second = resolver.resolve(&name("www.example.com"), RecordType::A);
+    assert_eq!(first, second);
+    assert_eq!(resolver.transport().asked(), [ROOT, COM, EXAMPLE_NS1]);
+}
+
+#[test]
+fn a_sibling_name_goes_straight_to_the_zone_it_shares() {
+    let mut resolver = resolver();
+    resolver
+        .resolve(&name("www.example.com"), RecordType::A)
+        .unwrap();
+    let records = resolver.resolve(&name("example.com"), RecordType::A);
+    assert_eq!(records, Ok(vec![a("example.com", [203, 0, 113, 1])]));
+    // The second lookup needed one query: the delegation was remembered.
+    assert_eq!(
+        resolver.transport().asked(),
+        [ROOT, COM, EXAMPLE_NS1, EXAMPLE_NS1]
+    );
+}
+
+#[test]
+fn a_new_domain_under_a_known_tld_skips_the_root() {
+    let mut resolver = resolver();
+    resolver
+        .resolve(&name("www.example.com"), RecordType::A)
+        .unwrap();
+    resolver
+        .resolve(&name("store.glueless.com"), RecordType::A)
+        .unwrap();
+    // The walk for the new name starts at COM. Only the hunt for the
+    // nameserver in the unvisited net zone has to begin at the root.
+    let later = &resolver.transport().asked()[3..];
+    assert_eq!(later, [COM, ROOT, NET, DNS_HOST, GLUELESS]);
+}
+
+#[test]
+fn a_cached_alias_is_followed_without_asking_again() {
+    let mut resolver = resolver();
+    let first = resolver.resolve(&name("blog.example.com"), RecordType::A);
+    let second = resolver.resolve(&name("blog.example.com"), RecordType::A);
+    assert_eq!(first, second);
+    assert_eq!(second.unwrap().len(), 2);
+    assert_eq!(resolver.transport().queries.len(), 3);
+}
+
+#[test]
+fn out_of_zone_claims_never_reach_the_cache() {
+    let mut resolver = resolver();
+    resolver
+        .resolve(&name("shop.example.com"), RecordType::A)
+        .unwrap();
+    let cached = resolver
+        .cache()
+        .get(&name("store.glueless.com"), RecordType::A, Instant::now());
+    assert_eq!(
+        cached,
+        Some(vec![a("store.glueless.com", [203, 0, 113, 50])])
+    );
 }
