@@ -3,7 +3,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use crate::error::{DnsError, DnsResult};
 use crate::name::Name;
 use crate::rtype::{CLASS_IN, RecordType};
-use crate::wire::Reader;
+use crate::wire::{Reader, Writer};
 
 /// The payload of a record, interpreted according to its type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,6 +126,60 @@ impl RData {
     }
 }
 
+impl Record {
+    pub fn encode(&self, writer: &mut Writer) {
+        self.name.encode(writer);
+        writer.write_u16(self.rtype.code());
+        writer.write_u16(self.class);
+        writer.write_u32(self.ttl);
+        // The length is only known once the data is written, so leave a gap
+        // and come back to fill it in.
+        let length_at = writer.position();
+        writer.write_u16(0);
+        self.data.encode(writer);
+        let length = writer.position() - length_at - 2;
+        writer.set_u16(length_at, length as u16);
+    }
+}
+
+impl RData {
+    fn encode(&self, writer: &mut Writer) {
+        match self {
+            RData::A(address) => writer.write_bytes(&address.octets()),
+            RData::Aaaa(address) => writer.write_bytes(&address.octets()),
+            RData::Ns(name) | RData::Cname(name) | RData::Ptr(name) => name.encode(writer),
+            RData::Mx {
+                preference,
+                exchange,
+            } => {
+                writer.write_u16(*preference);
+                exchange.encode(writer);
+            }
+            RData::Txt(strings) => {
+                for string in strings {
+                    // One length byte per string, so long text is split up.
+                    let bytes = string.as_bytes();
+                    if bytes.is_empty() {
+                        writer.write_u8(0);
+                    }
+                    for chunk in bytes.chunks(255) {
+                        writer.write_u8(chunk.len() as u8);
+                        writer.write_bytes(chunk);
+                    }
+                }
+            }
+            RData::Soa(soa) => {
+                soa.mname.encode(writer);
+                soa.rname.encode(writer);
+                for value in [soa.serial, soa.refresh, soa.retry, soa.expire, soa.minimum] {
+                    writer.write_u32(value);
+                }
+            }
+            RData::Other(bytes) => writer.write_bytes(bytes),
+        }
+    }
+}
+
 /// Read data that must be exactly `N` bytes long.
 fn fixed<const N: usize>(
     rtype: RecordType,
@@ -244,5 +298,68 @@ mod tests {
             (soa.serial, soa.refresh, soa.minimum),
             (2024010101, 7200, 300)
         );
+    }
+
+    fn round_trip(record: &Record) -> Record {
+        let mut writer = Writer::new();
+        record.encode(&mut writer);
+        let bytes = writer.finish();
+        let mut reader = Reader::new(&bytes);
+        let decoded = Record::decode(&mut reader).expect("decodes");
+        assert_eq!(reader.remaining(), 0);
+        decoded
+    }
+
+    #[test]
+    fn every_kind_of_data_survives_a_round_trip() {
+        let soa = Soa {
+            mname: name("ns.example.com"),
+            rname: name("admin.example.com"),
+            serial: 7,
+            refresh: 6,
+            retry: 5,
+            expire: 4,
+            minimum: 3,
+        };
+        let samples = [
+            (RecordType::A, RData::A(Ipv4Addr::new(192, 0, 2, 1))),
+            (
+                RecordType::Aaaa,
+                RData::Aaaa("2001:db8::1".parse().unwrap()),
+            ),
+            (RecordType::Ns, RData::Ns(name("ns1.example.com"))),
+            (RecordType::Cname, RData::Cname(name("www.example.com"))),
+            (RecordType::Ptr, RData::Ptr(name("host.example.com"))),
+            (
+                RecordType::Mx,
+                RData::Mx {
+                    preference: 10,
+                    exchange: name("mail.example.com"),
+                },
+            ),
+            (
+                RecordType::Txt,
+                RData::Txt(vec!["v=spf1 -all".into(), String::new()]),
+            ),
+            (RecordType::Soa, RData::Soa(soa)),
+            (RecordType::Unknown(99), RData::Other(vec![1, 2, 3])),
+        ];
+        for (rtype, data) in samples {
+            let record = Record::new(name("example.com"), rtype, 60, data);
+            assert_eq!(round_trip(&record), record);
+        }
+    }
+
+    #[test]
+    fn names_inside_the_data_are_compressed_against_the_owner() {
+        let record = Record::new(
+            name("example.com"),
+            RecordType::Ns,
+            300,
+            RData::Ns(name("ns1.example.com")),
+        );
+        let mut writer = Writer::new();
+        record.encode(&mut writer);
+        assert_eq!(writer.finish(), raw(2, b"\x03ns1\xC0\x00"));
     }
 }
