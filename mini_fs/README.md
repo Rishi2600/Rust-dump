@@ -46,11 +46,13 @@ mfs disk.img tree
 ```
 
 `ls` shows the kind, the link count and the size. `hello.txt` and `greeting`
-are two names for one file, so both show 2 links:
+are two names for one file, so both show 2 links. `docs` is 192 bytes, three
+64-byte entries, although it now lists only two: the slot that held
+`Cargo.lock` before it was moved is empty and waiting to be reused.
 
 ```text
 $ mfs disk.img ls /
-d  1       128  docs/
+d  1       192  docs/
 -  2        28  greeting
 
 $ mfs disk.img cat /greeting
