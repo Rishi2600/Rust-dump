@@ -95,6 +95,40 @@ impl<D: BlockDevice> FileSystem<D> {
     }
 }
 
+impl<D: BlockDevice> FileSystem<D> {
+    /// Read inode `number` from the inode table.
+    pub fn read_inode(&mut self, number: u32) -> FsResult<Inode> {
+        let (block, offset) = self.sb.inode_location(number)?;
+        Inode::decode(&self.disk.read_block(block)?[offset..])
+    }
+
+    /// Store inode `number`. Like every write, this belongs inside
+    /// [`FileSystem::atomic`].
+    pub fn write_inode(&mut self, number: u32, inode: &Inode) -> FsResult<()> {
+        let (block, offset) = self.sb.inode_location(number)?;
+        // Sixteen inodes share a block, so the others must be kept intact.
+        let mut table = self.disk.read_block(block)?;
+        inode.encode(&mut table[offset..]);
+        self.disk.write_block(block, &table)
+    }
+
+    /// Run `operation` as one transaction: either every block it writes
+    /// reaches the disk, or none of them do.
+    ///
+    /// If the operation fails part-way, its writes are simply dropped, so an
+    /// error never leaves the file system half-changed.
+    pub fn atomic<R>(&mut self, operation: impl FnOnce(&mut Self) -> FsResult<R>) -> FsResult<R> {
+        let result = operation(self).and_then(|value| {
+            self.disk.commit()?;
+            Ok(value)
+        });
+        if result.is_err() {
+            self.disk.abort();
+        }
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +218,40 @@ mod tests {
         let mut disk = FileSystem::mount(disk).unwrap().into_device();
         assert_eq!(disk.read_block(target), Ok([0x5A; BLOCK_SIZE]));
         assert_eq!(disk.read_block(sb.journal_start), Ok([0; BLOCK_SIZE]));
+    }
+
+    fn fresh() -> FileSystem<MemDisk> {
+        FileSystem::format(MemDisk::new(512), FormatOptions::default()).unwrap()
+    }
+
+    #[test]
+    fn an_inode_written_in_a_transaction_survives_remounting() {
+        let mut fs = fresh();
+        let mut file = Inode::new(InodeKind::File);
+        file.size = 1234;
+        fs.atomic(|fs| fs.write_inode(7, &file)).unwrap();
+
+        let mut fs = FileSystem::mount(fs.into_device()).unwrap();
+        assert_eq!(fs.read_inode(7), Ok(file));
+        // Its neighbours in the same table block were left alone.
+        assert_eq!(fs.read_inode(ROOT_INODE), Ok(Inode::new(InodeKind::Dir)));
+        assert_eq!(fs.read_inode(6).unwrap().kind, InodeKind::Free);
+        assert!(fs.read_inode(0).is_err());
+    }
+
+    #[test]
+    fn a_failed_operation_leaves_no_trace() {
+        let mut fs = fresh();
+        let result: FsResult<()> = fs.atomic(|fs| {
+            let mut root = fs.read_inode(ROOT_INODE)?;
+            root.size = 999;
+            fs.write_inode(ROOT_INODE, &root)?;
+            // The operation can see its own change...
+            assert_eq!(fs.read_inode(ROOT_INODE)?.size, 999);
+            Err(FsError::NoSpace)
+        });
+        // ...but once it fails, the change is gone.
+        assert_eq!(result, Err(FsError::NoSpace));
+        assert_eq!(fs.read_inode(ROOT_INODE).unwrap().size, 0);
     }
 }
