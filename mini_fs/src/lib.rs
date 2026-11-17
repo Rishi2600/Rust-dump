@@ -4,6 +4,7 @@ pub mod bitmap;
 pub mod blockmap;
 pub mod bytes;
 pub mod device;
+pub mod dir;
 pub mod error;
 pub mod file;
 pub mod fs;
