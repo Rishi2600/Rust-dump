@@ -1,6 +1,8 @@
+use crate::blockmap::MAX_FILE_SIZE;
 use crate::device::{BLOCK_SIZE, BlockDevice};
-use crate::error::FsResult;
+use crate::error::{FsError, FsResult};
 use crate::fs::FileSystem;
+use crate::inode::InodeKind;
 
 impl<D: BlockDevice> FileSystem<D> {
     /// Read from the content of inode `number`, starting `offset` bytes in.
@@ -36,12 +38,77 @@ impl<D: BlockDevice> FileSystem<D> {
     }
 }
 
+/// Journal slots a write may need beyond its data blocks: two bitmap blocks,
+/// the inode's block, up to three pointer blocks, and one more data block
+/// when the write does not start on a block boundary.
+const WRITE_OVERHEAD: usize = 8;
+
+impl<D: BlockDevice> FileSystem<D> {
+    /// Write `data` into the content of inode `number` at `offset`, growing
+    /// the file as needed. This is one step of a transaction, so it belongs
+    /// inside [`FileSystem::atomic`]; [`FileSystem::write_at`] does that.
+    ///
+    /// Writing past the current end leaves a hole: the skipped range takes
+    /// no disk space and reads back as zeros.
+    pub fn write_span(&mut self, number: u32, offset: usize, data: &[u8]) -> FsResult<()> {
+        let end = offset
+            .checked_add(data.len())
+            .filter(|&end| end <= MAX_FILE_SIZE)
+            .ok_or(FsError::FileTooLarge)?;
+        let mut inode = self.read_inode(number)?;
+        let mut done = 0;
+        while done < data.len() {
+            let position = offset + done;
+            let (index, within) = (position / BLOCK_SIZE, position % BLOCK_SIZE);
+            let step = (BLOCK_SIZE - within).min(data.len() - done);
+            let block = self
+                .bmap(&mut inode, index, true)?
+                .ok_or(FsError::NoSpace)?;
+            // A block that is only partly overwritten keeps its other bytes.
+            let mut contents = if step == BLOCK_SIZE {
+                [0; BLOCK_SIZE]
+            } else {
+                self.disk.read_block(block)?
+            };
+            contents[within..within + step].copy_from_slice(&data[done..done + step]);
+            self.disk.write_block(block, &contents)?;
+            done += step;
+        }
+        inode.size = inode.size.max(end as u32);
+        self.write_inode(number, &inode)
+    }
+
+    /// Write `data` into a file at `offset`.
+    ///
+    /// A transaction has to fit in the journal, so a long write is split
+    /// into several. Each piece is atomic; the write as a whole is not, and
+    /// a crash or a full disk can leave the file with only its first pieces.
+    pub fn write_at(&mut self, number: u32, offset: usize, data: &[u8]) -> FsResult<()> {
+        match self.read_inode(number)?.kind {
+            InodeKind::File => {}
+            InodeKind::Dir => return Err(FsError::IsADirectory(format!("inode {number}"))),
+            InodeKind::Free => return Err(FsError::NotFound(format!("inode {number}"))),
+        }
+        let blocks = self.disk.capacity().saturating_sub(WRITE_OVERHEAD).max(1);
+        let chunk = blocks * BLOCK_SIZE;
+        let mut done = 0;
+        loop {
+            let step = chunk.min(data.len() - done);
+            let piece = &data[done..done + step];
+            self.atomic(|fs| fs.write_span(number, offset + done, piece))?;
+            done += step;
+            if done == data.len() {
+                return Ok(());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::device::MemDisk;
     use crate::fs::FormatOptions;
-    use crate::inode::InodeKind;
 
     fn fresh() -> FileSystem<MemDisk> {
         FileSystem::format(MemDisk::new(512), FormatOptions::default()).unwrap()
@@ -91,5 +158,123 @@ mod tests {
         assert_eq!(buf[10], 0xEE);
         assert_eq!(fs.read_at(file, 2500, &mut buf), Ok(0));
         assert_eq!(fs.read_at(file, 9999, &mut buf), Ok(0));
+    }
+
+    fn empty_file(fs: &mut FileSystem<MemDisk>) -> u32 {
+        fs.atomic(|fs| fs.alloc_inode(InodeKind::File)).unwrap()
+    }
+
+    fn read_all(fs: &mut FileSystem<MemDisk>, file: u32) -> Vec<u8> {
+        let mut buf = vec![0; fs.read_inode(file).unwrap().size as usize];
+        let read = fs.read_at(file, 0, &mut buf).unwrap();
+        assert_eq!(read, buf.len());
+        buf
+    }
+
+    fn free_blocks(fs: &mut FileSystem<MemDisk>) -> u32 {
+        fs.sb.total_blocks - fs.sb.block_bitmap().count_set(&mut fs.disk).unwrap()
+    }
+
+    /// Bytes that differ from block to block, so misplaced blocks show up.
+    fn pattern(len: usize) -> Vec<u8> {
+        (0..len).map(|index| (index % 251) as u8).collect()
+    }
+
+    #[test]
+    fn what_is_written_can_be_read_back() {
+        let mut fs = fresh();
+        let file = empty_file(&mut fs);
+        fs.write_at(file, 0, b"hello, disk").unwrap();
+        assert_eq!(read_all(&mut fs, file), b"hello, disk");
+
+        // Overwriting the middle leaves both ends alone.
+        fs.write_at(file, 7, b"DISK").unwrap();
+        assert_eq!(read_all(&mut fs, file), b"hello, DISK");
+        // Writing at the end makes the file longer.
+        fs.write_at(file, 11, b"!").unwrap();
+        assert_eq!(read_all(&mut fs, file), b"hello, DISK!");
+    }
+
+    #[test]
+    fn a_write_can_straddle_blocks() {
+        let mut fs = fresh();
+        let file = empty_file(&mut fs);
+        let data = pattern(3000);
+        fs.write_at(file, 1000, &data).unwrap();
+        let contents = read_all(&mut fs, file);
+        assert_eq!(contents.len(), 4000);
+        assert!(contents[..1000].iter().all(|&byte| byte == 0));
+        assert_eq!(contents[1000..], data[..]);
+    }
+
+    #[test]
+    fn writing_far_past_the_end_leaves_a_hole_that_costs_nothing() {
+        let mut fs = fresh();
+        let file = empty_file(&mut fs);
+        let before = free_blocks(&mut fs);
+        fs.write_at(file, 200_000, b"end").unwrap();
+        assert_eq!(fs.read_inode(file).unwrap().size, 200_003);
+        // One data block and one indirect block, not the 195 in between.
+        assert_eq!(free_blocks(&mut fs), before - 2);
+        let contents = read_all(&mut fs, file);
+        assert!(contents[..200_000].iter().all(|&byte| byte == 0));
+        assert_eq!(&contents[200_000..], b"end");
+    }
+
+    #[test]
+    fn a_large_write_spans_many_transactions_and_pointer_blocks() {
+        let mut fs = fresh();
+        let file = empty_file(&mut fs);
+        // 300 blocks: all 12 direct, all 256 indirect, 32 double indirect.
+        let data = pattern(300 * BLOCK_SIZE);
+        fs.write_at(file, 0, &data).unwrap();
+        assert_eq!(read_all(&mut fs, file), data);
+        let inode = fs.read_inode(file).unwrap();
+        assert!(inode.indirect != 0 && inode.double_indirect != 0);
+
+        // It is still all there after a remount.
+        let mut fs = FileSystem::mount(fs.into_device()).unwrap();
+        assert_eq!(read_all(&mut fs, file), data);
+    }
+
+    #[test]
+    fn a_write_that_would_exceed_the_maximum_size_is_refused_whole() {
+        let mut fs = fresh();
+        let file = empty_file(&mut fs);
+        let refused = fs.write_at(file, MAX_FILE_SIZE - 2, b"abc");
+        assert_eq!(refused, Err(FsError::FileTooLarge));
+        assert_eq!(fs.read_inode(file).unwrap().size, 0);
+        assert_eq!(
+            fs.write_at(file, usize::MAX, b"abc"),
+            Err(FsError::FileTooLarge)
+        );
+    }
+
+    #[test]
+    fn a_full_disk_stops_a_write_between_pieces() {
+        let mut fs = fresh();
+        let file = empty_file(&mut fs);
+        // 469 data blocks exist, so 480 blocks of content cannot fit.
+        let data = pattern(480 * BLOCK_SIZE);
+        assert_eq!(fs.write_at(file, 0, &data), Err(FsError::NoSpace));
+        // The pieces that did fit are complete and correct.
+        let kept = read_all(&mut fs, file);
+        assert!(!kept.is_empty() && kept.len() < data.len());
+        assert_eq!(kept.len() % BLOCK_SIZE, 0);
+        assert_eq!(kept[..], data[..kept.len()]);
+    }
+
+    #[test]
+    fn only_files_can_be_written_this_way() {
+        let mut fs = fresh();
+        let root = crate::layout::ROOT_INODE;
+        assert!(matches!(
+            fs.write_at(root, 0, b"x"),
+            Err(FsError::IsADirectory(_))
+        ));
+        assert!(matches!(
+            fs.write_at(40, 0, b"x"),
+            Err(FsError::NotFound(_))
+        ));
     }
 }
