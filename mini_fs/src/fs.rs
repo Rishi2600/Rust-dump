@@ -2,7 +2,7 @@ use crate::device::{BLOCK_SIZE, BlockDevice};
 use crate::error::{FsError, FsResult};
 use crate::inode::{Inode, InodeKind};
 use crate::journal::Journal;
-use crate::layout::{ROOT_INODE, Superblock};
+use crate::layout::{INODE_SIZE, ROOT_INODE, Superblock};
 
 /// Choices made once, when an image is created.
 #[derive(Debug, Clone, Copy)]
@@ -126,6 +126,48 @@ impl<D: BlockDevice> FileSystem<D> {
             self.disk.abort();
         }
         result
+    }
+}
+
+impl<D: BlockDevice> FileSystem<D> {
+    /// Claim a free inode and initialise it as an empty file or directory.
+    pub fn alloc_inode(&mut self, kind: InodeKind) -> FsResult<u32> {
+        let bitmap = self.sb.inode_bitmap();
+        let number = bitmap.allocate(&mut self.disk)?.ok_or(FsError::NoInodes)?;
+        self.write_inode(number, &Inode::new(kind))?;
+        Ok(number)
+    }
+
+    /// Return an inode to the pool. Its blocks must already have been freed.
+    pub fn free_inode(&mut self, number: u32) -> FsResult<()> {
+        let bitmap = self.sb.inode_bitmap();
+        if number == ROOT_INODE || !bitmap.get(&mut self.disk, number)? {
+            return Err(FsError::Corrupt(format!("inode {number} cannot be freed")));
+        }
+        let (block, offset) = self.sb.inode_location(number)?;
+        let mut table = self.disk.read_block(block)?;
+        table[offset..offset + INODE_SIZE].fill(0);
+        self.disk.write_block(block, &table)?;
+        bitmap.set(&mut self.disk, number, false)
+    }
+
+    /// Claim a free data block. It is handed out full of zeros, so a new
+    /// file can never show what a deleted one left behind.
+    pub fn alloc_block(&mut self) -> FsResult<u32> {
+        let bitmap = self.sb.block_bitmap();
+        let block = bitmap.allocate(&mut self.disk)?.ok_or(FsError::NoSpace)?;
+        self.disk.write_block(block, &[0; BLOCK_SIZE])?;
+        Ok(block)
+    }
+
+    /// Return a data block to the pool.
+    pub fn free_block(&mut self, block: u32) -> FsResult<()> {
+        let bitmap = self.sb.block_bitmap();
+        let is_data = block >= self.sb.data_start && block < self.sb.total_blocks;
+        if !is_data || !bitmap.get(&mut self.disk, block)? {
+            return Err(FsError::Corrupt(format!("block {block} cannot be freed")));
+        }
+        bitmap.set(&mut self.disk, block, false)
     }
 }
 
@@ -253,5 +295,84 @@ mod tests {
         // ...but once it fails, the change is gone.
         assert_eq!(result, Err(FsError::NoSpace));
         assert_eq!(fs.read_inode(ROOT_INODE).unwrap().size, 0);
+    }
+
+    #[test]
+    fn inodes_are_handed_out_lowest_first_and_reused() {
+        let mut fs = fresh();
+        let (first, second) = fs
+            .atomic(|fs| {
+                Ok((
+                    fs.alloc_inode(InodeKind::File)?,
+                    fs.alloc_inode(InodeKind::Dir)?,
+                ))
+            })
+            .unwrap();
+        assert_eq!((first, second), (2, 3));
+        assert_eq!(fs.read_inode(3), Ok(Inode::new(InodeKind::Dir)));
+
+        fs.atomic(|fs| fs.free_inode(2)).unwrap();
+        assert_eq!(fs.read_inode(2).unwrap().kind, InodeKind::Free);
+        assert_eq!(fs.atomic(|fs| fs.alloc_inode(InodeKind::File)), Ok(2));
+        // The root and inodes that are not in use cannot be freed.
+        assert!(fs.atomic(|fs| fs.free_inode(ROOT_INODE)).is_err());
+        assert!(fs.atomic(|fs| fs.free_inode(50)).is_err());
+    }
+
+    #[test]
+    fn running_out_of_inodes_is_an_error_that_changes_nothing() {
+        let mut fs = fresh();
+        // 128 inodes, minus the reserved one and the root.
+        for _ in 0..126 {
+            fs.atomic(|fs| fs.alloc_inode(InodeKind::File)).unwrap();
+        }
+        assert_eq!(
+            fs.atomic(|fs| fs.alloc_inode(InodeKind::File)),
+            Err(FsError::NoInodes)
+        );
+        assert_eq!(fs.sb.inode_bitmap().count_set(&mut fs.disk), Ok(128));
+    }
+
+    #[test]
+    fn a_fresh_block_is_zeroed_even_on_a_dirty_disk() {
+        let mut dirty = MemDisk::new(512);
+        for block in 0..512 {
+            dirty.write_block(block, &[0xFF; BLOCK_SIZE]).unwrap();
+        }
+        let mut fs = FileSystem::format(dirty, FormatOptions::default()).unwrap();
+        let block = fs.atomic(|fs| fs.alloc_block()).unwrap();
+        assert_eq!(block, fs.sb.data_start);
+        assert_eq!(fs.disk.read_block(block), Ok([0; BLOCK_SIZE]));
+    }
+
+    #[test]
+    fn only_data_blocks_that_are_in_use_can_be_freed() {
+        let mut fs = fresh();
+        let block = fs.atomic(|fs| fs.alloc_block()).unwrap();
+        assert_eq!(fs.atomic(|fs| fs.free_block(block)), Ok(()));
+        // Freeing twice, or freeing the superblock, would corrupt the disk.
+        assert!(matches!(
+            fs.atomic(|fs| fs.free_block(block)),
+            Err(FsError::Corrupt(_))
+        ));
+        assert!(matches!(
+            fs.atomic(|fs| fs.free_block(0)),
+            Err(FsError::Corrupt(_))
+        ));
+        assert!(matches!(
+            fs.atomic(|fs| fs.free_block(9999)),
+            Err(FsError::Corrupt(_))
+        ));
+    }
+
+    #[test]
+    fn a_full_disk_reports_no_space() {
+        let mut fs = fresh();
+        let free = fs.sb.data_blocks();
+        // Small transactions, so each one fits in the journal.
+        for _ in 0..free {
+            fs.atomic(|fs| fs.alloc_block()).unwrap();
+        }
+        assert_eq!(fs.atomic(|fs| fs.alloc_block()), Err(FsError::NoSpace));
     }
 }
