@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use crate::device::{Block, BlockDevice};
+use crate::bytes::put_u32;
+use crate::device::{BLOCK_SIZE, Block, BlockDevice};
 use crate::error::{FsError, FsResult};
 
 /// A disk on which a group of writes either all happen or none do.
@@ -59,6 +60,47 @@ impl<D: BlockDevice> Journal<D> {
     }
 }
 
+impl<D: BlockDevice> Journal<D> {
+    /// Apply the current transaction so that a crash at any moment leaves
+    /// either all of it on the disk or none of it.
+    pub fn commit(&mut self) -> FsResult<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        // 1. Copy every changed block into the log. The real locations are
+        //    untouched, so a crash now loses the transaction and nothing else.
+        for (slot, block) in self.pending.values().enumerate() {
+            self.device
+                .write_block(self.start + 1 + slot as u32, block)?;
+        }
+        self.device.flush()?;
+
+        // 2. Write the header naming where each logged block belongs. This
+        //    single block write is the commit point: before it the
+        //    transaction did not happen, after it the transaction will
+        //    happen even if the power fails.
+        let mut header = [0; BLOCK_SIZE];
+        put_u32(&mut header, 0, self.pending.len() as u32);
+        for (slot, home) in self.pending.keys().enumerate() {
+            put_u32(&mut header, 4 + slot * 4, *home);
+        }
+        self.device.write_block(self.start, &header)?;
+        self.device.flush()?;
+
+        // 3. Install: copy the blocks to where they really live.
+        for (home, block) in &self.pending {
+            self.device.write_block(*home, block)?;
+        }
+        self.device.flush()?;
+
+        // 4. Erase the header, so the log is not replayed needlessly.
+        self.device.write_block(self.start, &[0; BLOCK_SIZE])?;
+        self.device.flush()?;
+        self.pending.clear();
+        Ok(())
+    }
+}
+
 impl<D: BlockDevice> BlockDevice for Journal<D> {
     fn block_count(&self) -> u32 {
         self.device.block_count()
@@ -88,7 +130,7 @@ impl<D: BlockDevice> BlockDevice for Journal<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::device::{BLOCK_SIZE, MemDisk};
+    use crate::device::MemDisk;
 
     /// A 32-block disk whose blocks 1 to 8 are the log: one header, 7 slots.
     fn journal() -> Journal<MemDisk> {
@@ -150,5 +192,30 @@ mod tests {
         );
         assert_eq!(journal.write_block(9, &filled(1)), Ok(()));
         assert_eq!(journal.block_count(), 32);
+    }
+
+    #[test]
+    fn commit_puts_every_block_in_its_real_place() {
+        let mut journal = journal();
+        journal.write_block(20, &filled(1)).unwrap();
+        journal.write_block(30, &filled(2)).unwrap();
+        journal.commit().unwrap();
+        assert_eq!(journal.pending(), 0);
+
+        let mut disk = journal.into_inner();
+        assert_eq!(disk.read_block(20), Ok(filled(1)));
+        assert_eq!(disk.read_block(30), Ok(filled(2)));
+        // The header was erased again once the blocks were installed.
+        assert_eq!(disk.read_block(1), Ok(filled(0)));
+        // The copies made on the way are still in the log slots.
+        assert_eq!(disk.read_block(2), Ok(filled(1)));
+        assert_eq!(disk.read_block(3), Ok(filled(2)));
+    }
+
+    #[test]
+    fn committing_nothing_writes_nothing() {
+        let mut journal = journal();
+        journal.commit().unwrap();
+        assert_eq!(journal.device(), &MemDisk::new(32));
     }
 }
