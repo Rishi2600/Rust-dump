@@ -1,4 +1,5 @@
-use crate::device::BLOCK_SIZE;
+use crate::bytes::{get_u32, put_u32};
+use crate::device::{BLOCK_SIZE, Block};
 use crate::error::{FsError, FsResult};
 
 /// Size of one inode on disk, in bytes.
@@ -97,6 +98,73 @@ impl Superblock {
     }
 }
 
+/// The first four bytes of every image: "MFS1".
+pub const MAGIC: u32 = u32::from_le_bytes(*b"MFS1");
+
+impl Superblock {
+    /// The contents of block 0.
+    pub fn encode(&self) -> Block {
+        let fields = [
+            MAGIC,
+            BLOCK_SIZE as u32,
+            self.total_blocks,
+            self.inode_count,
+            self.journal_start,
+            self.journal_blocks,
+            self.inode_bitmap_start,
+            self.inode_bitmap_blocks,
+            self.block_bitmap_start,
+            self.block_bitmap_blocks,
+            self.inode_table_start,
+            self.inode_table_blocks,
+            self.data_start,
+        ];
+        let mut block = [0; BLOCK_SIZE];
+        for (index, field) in fields.into_iter().enumerate() {
+            put_u32(&mut block, index * 4, field);
+        }
+        block
+    }
+
+    /// Read block 0 back, refusing anything that is not one of our images.
+    pub fn decode(block: &Block) -> FsResult<Self> {
+        let field = |index: usize| get_u32(block, index * 4);
+        if field(0) != MAGIC {
+            return Err(FsError::BadImage("it does not start with MFS1".into()));
+        }
+        if field(1) != BLOCK_SIZE as u32 {
+            return Err(FsError::BadImage(format!(
+                "it uses {}-byte blocks, this build uses {BLOCK_SIZE}",
+                field(1)
+            )));
+        }
+        let stored = Self {
+            total_blocks: field(2),
+            inode_count: field(3),
+            journal_start: field(4),
+            journal_blocks: field(5),
+            inode_bitmap_start: field(6),
+            inode_bitmap_blocks: field(7),
+            block_bitmap_start: field(8),
+            block_bitmap_blocks: field(9),
+            inode_table_start: field(10),
+            inode_table_blocks: field(11),
+            data_start: field(12),
+        };
+        // The layout follows from three numbers. Recomputing it catches a
+        // superblock whose fields contradict each other.
+        let planned = Self::plan(
+            stored.total_blocks,
+            stored.inode_count,
+            stored.journal_blocks,
+        );
+        match planned {
+            Ok(planned) if planned == stored => Ok(stored),
+            _ => Err(FsError::BadImage("its superblock is inconsistent".into())),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +213,31 @@ mod tests {
             refused(512, u32::MAX, 32),
             "inode table larger than the disk"
         );
+    }
+
+    #[test]
+    fn the_superblock_survives_a_round_trip() {
+        let sb = Superblock::plan(512, 128, 32).unwrap();
+        let block = sb.encode();
+        assert_eq!(&block[..4], b"MFS1");
+        // Block size 1024 and total blocks 512, little-endian.
+        assert_eq!(block[4..12], [0x00, 0x04, 0, 0, 0x00, 0x02, 0, 0]);
+        assert_eq!(Superblock::decode(&block), Ok(sb));
+    }
+
+    #[test]
+    fn foreign_or_damaged_superblocks_are_rejected() {
+        let rejected =
+            |block: &Block| matches!(Superblock::decode(block), Err(FsError::BadImage(_)));
+        assert!(rejected(&[0; BLOCK_SIZE]), "an empty disk");
+
+        let good = Superblock::plan(512, 128, 32).unwrap().encode();
+        let mut wrong_size = good;
+        put_u32(&mut wrong_size, 4, 4096);
+        assert!(rejected(&wrong_size), "a different block size");
+
+        let mut moved = good;
+        put_u32(&mut moved, 48, 44); // data_start no longer matches the plan
+        assert!(rejected(&moved), "fields that contradict each other");
     }
 }
