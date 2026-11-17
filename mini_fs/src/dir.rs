@@ -131,6 +131,24 @@ impl<D: BlockDevice> FileSystem<D> {
     }
 }
 
+impl<D: BlockDevice> FileSystem<D> {
+    /// Remove `name` from directory `dir` and return the inode it pointed
+    /// at. One step of a transaction.
+    ///
+    /// The slot is zeroed and left in place for a later entry to reuse. The
+    /// directory itself never shrinks.
+    pub fn dir_remove(&mut self, dir: u32, name: &str) -> FsResult<u32> {
+        let slots = self.dir_slots(dir)?;
+        let found = slots.into_iter().find_map(|(offset, slot)| {
+            let entry = slot.filter(|entry| entry.name == name)?;
+            Some((offset, entry.inode))
+        });
+        let (offset, inode) = found.ok_or_else(|| FsError::NotFound(name.to_string()))?;
+        self.write_span(dir, offset, &[0; DIRENT_SIZE])?;
+        Ok(inode)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,5 +274,44 @@ mod tests {
         assert_eq!(root.size as usize, 20 * DIRENT_SIZE);
         assert!(root.direct[0] != 0 && root.direct[1] != 0);
         assert_eq!(fs.dir_lookup(ROOT_INODE, "file19"), Ok(Some(29)));
+    }
+
+    #[test]
+    fn removing_a_name_frees_its_slot_for_reuse() {
+        let mut fs = fresh();
+        fs.atomic(|fs| {
+            fs.dir_add(ROOT_INODE, "a.txt", 5)?;
+            fs.dir_add(ROOT_INODE, "b.txt", 9)?;
+            fs.dir_add(ROOT_INODE, "c.txt", 12)
+        })
+        .unwrap();
+
+        assert_eq!(fs.atomic(|fs| fs.dir_remove(ROOT_INODE, "b.txt")), Ok(9));
+        assert_eq!(fs.dir_lookup(ROOT_INODE, "b.txt"), Ok(None));
+        assert_eq!(
+            fs.dir_list(ROOT_INODE),
+            Ok(vec![entry(5, "a.txt"), entry(12, "c.txt")])
+        );
+
+        // The next name takes the hole in the middle, so nothing grows.
+        fs.atomic(|fs| fs.dir_add(ROOT_INODE, "d.txt", 20)).unwrap();
+        let names: Vec<String> = fs
+            .dir_list(ROOT_INODE)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, ["a.txt", "d.txt", "c.txt"]);
+        assert_eq!(
+            fs.read_inode(ROOT_INODE).unwrap().size as usize,
+            3 * DIRENT_SIZE
+        );
+    }
+
+    #[test]
+    fn removing_a_name_that_is_not_there_is_an_error() {
+        let mut fs = fresh();
+        let missing = fs.atomic(|fs| fs.dir_remove(ROOT_INODE, "ghost"));
+        assert_eq!(missing, Err(FsError::NotFound("ghost".into())));
     }
 }
