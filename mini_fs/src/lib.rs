@@ -3,4 +3,5 @@
 pub mod bytes;
 pub mod device;
 pub mod error;
+pub mod journal;
 pub mod layout;
