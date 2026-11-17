@@ -8,6 +8,7 @@ pub mod dir;
 pub mod error;
 pub mod file;
 pub mod fs;
+pub mod fsck;
 pub mod inode;
 pub mod journal;
 pub mod layout;
