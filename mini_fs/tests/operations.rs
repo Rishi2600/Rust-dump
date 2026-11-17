@@ -291,3 +291,74 @@ fn links_need_an_existing_file_and_an_unused_name() {
     );
     assert_eq!(fs.stat("/a.txt").unwrap().links, 1);
 }
+
+#[test]
+fn rename_changes_a_name_without_touching_the_file() {
+    let mut fs = fresh();
+    let number = fs.write_file("/old.txt", b"same bytes").unwrap();
+    fs.rename("/old.txt", "/new.txt").unwrap();
+    assert_eq!(fs.resolve("/new.txt"), Ok(number));
+    assert_eq!(fs.read_file("/new.txt").unwrap(), b"same bytes");
+    assert_eq!(
+        fs.resolve("/old.txt"),
+        Err(FsError::NotFound("/old.txt".into()))
+    );
+}
+
+#[test]
+fn a_directory_moves_with_everything_inside_it() {
+    let mut fs = fresh();
+    fs.mkdir("/src").unwrap();
+    fs.mkdir("/src/inner").unwrap();
+    fs.mkdir("/dest").unwrap();
+    fs.write_file("/src/inner/deep.txt", &vec![8; 30_000])
+        .unwrap();
+    let before = fs.usage().unwrap();
+
+    fs.rename("/src", "/dest/moved").unwrap();
+    assert_eq!(names(&mut fs, "/"), ["dest"]);
+    assert_eq!(
+        fs.read_file("/dest/moved/inner/deep.txt").unwrap(),
+        vec![8; 30_000]
+    );
+    // Moving 30 KB cost one block: the destination directory's first entry.
+    let after = fs.usage().unwrap();
+    assert_eq!(after.free_blocks, before.free_blocks - 1);
+    assert_eq!(after.free_inodes, before.free_inodes);
+}
+
+#[test]
+fn renames_that_would_break_the_tree_are_refused() {
+    let mut fs = fresh();
+    fs.mkdir("/a").unwrap();
+    fs.mkdir("/a/b").unwrap();
+    fs.write_file("/f", b"f").unwrap();
+
+    assert!(matches!(
+        fs.rename("/a", "/a/b/c"),
+        Err(FsError::InvalidPath(_))
+    ));
+    assert!(matches!(
+        fs.rename("/a", "/a/c"),
+        Err(FsError::InvalidPath(_))
+    ));
+    assert_eq!(
+        fs.rename("/f", "/a"),
+        Err(FsError::AlreadyExists("/a".into()))
+    );
+    assert_eq!(
+        fs.rename("/nope", "/x"),
+        Err(FsError::NotFound("/nope".into()))
+    );
+    assert!(matches!(
+        fs.rename("/f", "/nope/f"),
+        Err(FsError::NotFound(_))
+    ));
+    assert!(matches!(
+        fs.rename("/", "/a/root"),
+        Err(FsError::InvalidPath(_))
+    ));
+    // After all those refusals nothing has moved.
+    assert_eq!(names(&mut fs, "/"), ["a", "f"]);
+    assert_eq!(names(&mut fs, "/a"), ["b"]);
+}

@@ -207,6 +207,38 @@ impl<D: BlockDevice> FileSystem<D> {
     }
 }
 
+impl<D: BlockDevice> FileSystem<D> {
+    /// Move or rename the file or directory at `from` to `to`.
+    ///
+    /// Nothing is copied, however large the thing being moved. Its name is
+    /// taken out of one directory and put into another, and the inode stays
+    /// where it is.
+    pub fn rename(&mut self, from: &str, to: &str) -> FsResult<()> {
+        self.atomic(|fs| {
+            let (from_chain, from_name) = fs.walk_parent(from)?;
+            let from_parent = from_chain[from_chain.len() - 1];
+            let found = fs.dir_lookup(from_parent, from_name)?;
+            let number = found.ok_or_else(|| FsError::NotFound(from.to_string()))?;
+
+            let (to_chain, to_name) = fs.walk_parent(to)?;
+            let to_parent = to_chain[to_chain.len() - 1];
+            // If the thing being moved is on the way to its destination, it
+            // is a directory being moved into itself. That would detach it,
+            // and everything in it, from the root.
+            if to_chain.contains(&number) {
+                return Err(FsError::InvalidPath(format!(
+                    "`{from}` cannot be moved inside itself"
+                )));
+            }
+            if fs.dir_lookup(to_parent, to_name)?.is_some() {
+                return Err(FsError::AlreadyExists(to.to_string()));
+            }
+            fs.dir_remove(from_parent, from_name)?;
+            fs.dir_add(to_parent, to_name, number)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
