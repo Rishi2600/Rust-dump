@@ -1,5 +1,5 @@
 use crate::device::{BLOCK_SIZE, BlockDevice};
-use crate::error::FsResult;
+use crate::error::{FsError, FsResult};
 use crate::inode::{Inode, InodeKind};
 use crate::journal::Journal;
 use crate::layout::{ROOT_INODE, Superblock};
@@ -75,11 +75,30 @@ impl<D: BlockDevice> FileSystem<D> {
     }
 }
 
+impl<D: BlockDevice> FileSystem<D> {
+    /// Open the file system on `device`.
+    ///
+    /// Mounting also finishes any transaction that a crash interrupted after
+    /// its commit point, so the rest of the code always sees a consistent disk.
+    pub fn mount(mut device: D) -> FsResult<Self> {
+        let sb = Superblock::decode(&device.read_block(0)?)?;
+        if sb.total_blocks != device.block_count() {
+            return Err(FsError::BadImage(format!(
+                "it was made for {} blocks but the disk has {}",
+                sb.total_blocks,
+                device.block_count()
+            )));
+        }
+        let mut disk = Journal::new(device, sb.journal_start, sb.journal_blocks);
+        disk.recover()?;
+        Ok(Self { disk, sb })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::device::MemDisk;
-    use crate::error::FsError;
 
     #[test]
     fn format_lays_out_an_empty_file_system() {
@@ -117,5 +136,53 @@ mod tests {
     fn a_disk_too_small_to_format_is_refused() {
         let tiny = FileSystem::format(MemDisk::new(20), FormatOptions::default());
         assert!(matches!(tiny, Err(FsError::InvalidOptions(_))));
+    }
+
+    #[test]
+    fn a_formatted_disk_can_be_mounted_again() {
+        let fs = FileSystem::format(MemDisk::new(512), FormatOptions::default()).unwrap();
+        let sb = *fs.superblock();
+        let mounted = FileSystem::mount(fs.into_device()).unwrap();
+        assert_eq!(*mounted.superblock(), sb);
+    }
+
+    #[test]
+    fn mounting_rejects_disks_that_are_not_ours() {
+        let blank = FileSystem::mount(MemDisk::new(512));
+        assert!(matches!(blank, Err(FsError::BadImage(_))));
+
+        // A superblock copied onto a disk of a different size.
+        let mut formatted = FileSystem::format(MemDisk::new(512), FormatOptions::default())
+            .unwrap()
+            .into_device();
+        let mut larger = MemDisk::new(600);
+        larger
+            .write_block(0, &formatted.read_block(0).unwrap())
+            .unwrap();
+        assert!(matches!(
+            FileSystem::mount(larger),
+            Err(FsError::BadImage(_))
+        ));
+    }
+
+    #[test]
+    fn mounting_replays_a_transaction_left_in_the_journal() {
+        use crate::bytes::put_u32;
+        let fs = FileSystem::format(MemDisk::new(512), FormatOptions::default()).unwrap();
+        let sb = *fs.superblock();
+        let mut disk = fs.into_device();
+
+        // Fake a crash just after a commit: one block logged, not installed.
+        let target = sb.data_start + 5;
+        disk.write_block(sb.journal_start + 1, &[0x5A; BLOCK_SIZE])
+            .unwrap();
+        let mut header = [0; BLOCK_SIZE];
+        put_u32(&mut header, 0, 1);
+        put_u32(&mut header, 4, target);
+        disk.write_block(sb.journal_start, &header).unwrap();
+
+        let mut disk = FileSystem::mount(disk).unwrap().into_device();
+        assert_eq!(disk.read_block(target), Ok([0x5A; BLOCK_SIZE]));
+        assert_eq!(disk.read_block(sb.journal_start), Ok([0; BLOCK_SIZE]));
     }
 }
