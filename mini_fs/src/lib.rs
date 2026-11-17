@@ -5,6 +5,7 @@ pub mod blockmap;
 pub mod bytes;
 pub mod device;
 pub mod error;
+pub mod file;
 pub mod fs;
 pub mod inode;
 pub mod journal;
