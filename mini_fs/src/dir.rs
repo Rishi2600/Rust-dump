@@ -107,6 +107,30 @@ impl<D: BlockDevice> FileSystem<D> {
     }
 }
 
+impl<D: BlockDevice> FileSystem<D> {
+    /// Add the name `name` to directory `dir`, pointing at `inode`. One step
+    /// of a transaction.
+    pub fn dir_add(&mut self, dir: u32, name: &str, inode: u32) -> FsResult<()> {
+        let entry = DirEntry {
+            inode,
+            name: name.to_string(),
+        };
+        let raw = entry.encode()?;
+        let slots = self.dir_slots(dir)?;
+        let taken = slots
+            .iter()
+            .any(|(_, slot)| slot.as_ref().is_some_and(|e| e.name == name));
+        if taken {
+            return Err(FsError::AlreadyExists(name.to_string()));
+        }
+        // Reuse a slot emptied by an earlier removal, or else grow the
+        // directory by one entry.
+        let empty = slots.iter().find(|(_, slot)| slot.is_none());
+        let offset = empty.map_or(slots.len() * DIRENT_SIZE, |(offset, _)| *offset);
+        self.write_span(dir, offset, &raw)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +212,49 @@ mod tests {
             fs.dir_lookup(file, "x"),
             Err(FsError::NotADirectory(_))
         ));
+    }
+
+    #[test]
+    fn adding_a_name_appends_an_entry() {
+        let mut fs = fresh();
+        fs.atomic(|fs| {
+            fs.dir_add(ROOT_INODE, "a.txt", 5)?;
+            fs.dir_add(ROOT_INODE, "b.txt", 9)
+        })
+        .unwrap();
+        assert_eq!(
+            fs.dir_list(ROOT_INODE),
+            Ok(vec![entry(5, "a.txt"), entry(9, "b.txt")])
+        );
+        assert_eq!(
+            fs.read_inode(ROOT_INODE).unwrap().size as usize,
+            2 * DIRENT_SIZE
+        );
+    }
+
+    #[test]
+    fn a_name_can_appear_only_once_in_a_directory() {
+        let mut fs = fresh();
+        fs.atomic(|fs| fs.dir_add(ROOT_INODE, "a.txt", 5)).unwrap();
+        let again = fs.atomic(|fs| fs.dir_add(ROOT_INODE, "a.txt", 6));
+        assert_eq!(again, Err(FsError::AlreadyExists("a.txt".into())));
+        let bad = fs.atomic(|fs| fs.dir_add(ROOT_INODE, "a/b", 6));
+        assert!(matches!(bad, Err(FsError::InvalidName(_))));
+        assert_eq!(fs.dir_list(ROOT_INODE).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_directory_grows_past_one_block() {
+        let mut fs = fresh();
+        // 16 entries fill a block, so 20 need a second one.
+        for index in 0..20 {
+            let name = format!("file{index}");
+            fs.atomic(|fs| fs.dir_add(ROOT_INODE, &name, 10 + index))
+                .unwrap();
+        }
+        let root = fs.read_inode(ROOT_INODE).unwrap();
+        assert_eq!(root.size as usize, 20 * DIRENT_SIZE);
+        assert!(root.direct[0] != 0 && root.direct[1] != 0);
+        assert_eq!(fs.dir_lookup(ROOT_INODE, "file19"), Ok(Some(29)));
     }
 }
