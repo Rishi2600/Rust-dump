@@ -8,7 +8,8 @@ use crate::inode::{DIRECT, Inode};
 pub const POINTERS_PER_BLOCK: usize = BLOCK_SIZE / 4;
 
 /// The most blocks of content one file can have.
-pub const MAX_FILE_BLOCKS: usize = DIRECT + POINTERS_PER_BLOCK;
+pub const MAX_FILE_BLOCKS: usize =
+    DIRECT + POINTERS_PER_BLOCK + POINTERS_PER_BLOCK * POINTERS_PER_BLOCK;
 pub const MAX_FILE_SIZE: usize = MAX_FILE_BLOCKS * BLOCK_SIZE;
 
 impl<D: BlockDevice> FileSystem<D> {
@@ -36,6 +37,20 @@ impl<D: BlockDevice> FileSystem<D> {
                 return Ok(None);
             };
             return self.table_target(table, index, allocate);
+        }
+
+        // Past that, one more level: a block of pointers to pointer blocks.
+        // Two lookups pick first the inner table, then the slot inside it.
+        let index = index - POINTERS_PER_BLOCK;
+        if index < POINTERS_PER_BLOCK * POINTERS_PER_BLOCK {
+            let Some(outer) = self.pointer_target(&mut inode.double_indirect, allocate)? else {
+                return Ok(None);
+            };
+            let Some(inner) = self.table_target(outer, index / POINTERS_PER_BLOCK, allocate)?
+            else {
+                return Ok(None);
+            };
+            return self.table_target(inner, index % POINTERS_PER_BLOCK, allocate);
         }
         Err(FsError::FileTooLarge)
     }
@@ -137,5 +152,38 @@ mod tests {
         // Looking without allocating finds blocks, and reports holes.
         assert_eq!(fs.bmap(&mut inode, DIRECT, false), Ok(Some(block)));
         assert_eq!(fs.bmap(&mut inode, DIRECT + 2, false), Ok(None));
+    }
+
+    #[test]
+    fn far_blocks_go_through_two_levels_of_pointer_blocks() {
+        let mut fs = fresh();
+        let before = free_blocks(&mut fs);
+        let mut inode = Inode::new(InodeKind::File);
+        let first = DIRECT + POINTERS_PER_BLOCK;
+        fs.atomic(|fs| fs.bmap(&mut inode, first, true)).unwrap();
+        // The outer table, one inner table, and the data block.
+        assert_eq!(free_blocks(&mut fs), before - 3);
+
+        // 256 blocks further on, a second inner table is needed.
+        fs.atomic(|fs| fs.bmap(&mut inode, first + POINTERS_PER_BLOCK, true))
+            .unwrap();
+        assert_eq!(free_blocks(&mut fs), before - 5);
+        let outer = fs.disk.read_block(inode.double_indirect).unwrap();
+        assert_ne!(get_u32(&outer, 0), 0);
+        assert_ne!(get_u32(&outer, 4), 0);
+        assert_eq!(get_u32(&outer, 8), 0);
+        // Neither the direct nor the single indirect pointers were touched.
+        assert_eq!((inode.direct, inode.indirect), ([0; DIRECT], 0));
+    }
+
+    #[test]
+    fn the_last_block_of_the_largest_possible_file_is_reachable() {
+        let mut fs = fresh();
+        let mut inode = Inode::new(InodeKind::File);
+        let last = fs.atomic(|fs| fs.bmap(&mut inode, MAX_FILE_BLOCKS - 1, true));
+        assert!(matches!(last, Ok(Some(_))));
+        // 12 + 256 + 256 * 256 blocks of 1024 bytes: a little over 64 MB.
+        assert_eq!(MAX_FILE_BLOCKS, 65_804);
+        assert_eq!(MAX_FILE_SIZE, 67_383_296);
     }
 }
