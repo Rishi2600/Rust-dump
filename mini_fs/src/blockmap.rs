@@ -113,6 +113,37 @@ impl<D: BlockDevice> FileSystem<D> {
     }
 }
 
+impl<D: BlockDevice> FileSystem<D> {
+    /// Every disk block an inode uses: its data blocks and the pointer
+    /// blocks that lead to them.
+    pub fn block_list(&mut self, inode: &Inode) -> FsResult<Vec<u32>> {
+        let mut blocks = Vec::new();
+        for pointer in inode.direct {
+            self.collect_tree(pointer, 0, &mut blocks)?;
+        }
+        self.collect_tree(inode.indirect, 1, &mut blocks)?;
+        self.collect_tree(inode.double_indirect, 2, &mut blocks)?;
+        Ok(blocks)
+    }
+
+    fn collect_tree(&mut self, block: u32, depth: u32, found: &mut Vec<u32>) -> FsResult<()> {
+        if block == 0 {
+            return Ok(());
+        }
+        found.push(block);
+        // A pointer that leaves the data area is damage. It is listed so the
+        // checker can report it, but it is not followed.
+        let in_data_area = block >= self.sb.data_start && block < self.sb.total_blocks;
+        if depth > 0 && in_data_area {
+            let table = self.disk.read_block(block)?;
+            for slot in 0..POINTERS_PER_BLOCK {
+                self.collect_tree(get_u32(&table, slot * 4), depth - 1, found)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
