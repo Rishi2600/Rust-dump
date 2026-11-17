@@ -165,7 +165,7 @@ impl<D: BlockDevice> BlockDevice for Journal<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::device::MemDisk;
+    use crate::device::{FaultyDisk, MemDisk};
 
     /// A 32-block disk whose blocks 1 to 8 are the log: one header, 7 slots.
     fn journal() -> Journal<MemDisk> {
@@ -301,5 +301,55 @@ mod tests {
         into_log.write_block(1, &header).unwrap();
         let recovered = Journal::new(into_log, 1, 8).recover();
         assert!(matches!(recovered, Err(FsError::Corrupt(_))));
+    }
+
+    #[test]
+    fn a_crash_at_any_write_leaves_all_of_a_transaction_or_none_of_it() {
+        // Three blocks hold 'a'. One transaction turns them all into 'b'.
+        let homes = [20, 21, 22];
+        let mut base = MemDisk::new(32);
+        for home in homes {
+            base.write_block(home, &filled(b'a')).unwrap();
+        }
+
+        let (mut kept_old, mut got_new) = (0, 0);
+        for budget in 0.. {
+            // Cut the power after `budget` writes.
+            let mut journal = Journal::new(FaultyDisk::failing_after(base.clone(), budget), 1, 8);
+            for home in homes {
+                journal.write_block(home, &filled(b'b')).unwrap();
+            }
+            let finished = journal.commit().is_ok();
+
+            // The power comes back, and recovery runs on whatever survived.
+            let mut restarted = Journal::new(journal.into_inner().into_inner(), 1, 8);
+            restarted.recover().unwrap();
+            let seen = homes.map(|home| restarted.read_block(home).unwrap()[0]);
+            match seen {
+                [b'a', b'a', b'a'] => kept_old += 1,
+                [b'b', b'b', b'b'] => got_new += 1,
+                torn => panic!("after {budget} writes the transaction was torn: {torn:?}"),
+            }
+            if finished {
+                break;
+            }
+        }
+        // 3 log writes and the header come before the commit point takes
+        // effect; 3 installs, the header erase, and a clean run come after.
+        assert_eq!((kept_old, got_new), (4, 5));
+    }
+
+    #[test]
+    fn a_crash_during_recovery_is_repaired_by_recovering_again() {
+        for budget in 0..4 {
+            let dying = FaultyDisk::failing_after(committed_but_not_installed(), budget);
+            let mut interrupted = Journal::new(dying, 1, 8);
+            let _ = interrupted.recover();
+
+            let mut restarted = Journal::new(interrupted.into_inner().into_inner(), 1, 8);
+            restarted.recover().unwrap();
+            assert_eq!(restarted.read_block(20), Ok(filled(1)));
+            assert_eq!(restarted.read_block(30), Ok(filled(2)));
+        }
     }
 }

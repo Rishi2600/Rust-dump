@@ -135,6 +135,57 @@ impl BlockDevice for FileDisk {
     }
 }
 
+/// A disk that loses power after a set number of block writes.
+///
+/// Once it has failed, every later write fails too. Tests use it to stop an
+/// operation at each possible point and then check what a restart finds.
+#[derive(Debug, Clone)]
+pub struct FaultyDisk<D> {
+    inner: D,
+    writes_left: usize,
+    writes: usize,
+}
+
+impl<D> FaultyDisk<D> {
+    /// Let `writes` block writes through, then fail.
+    pub fn failing_after(inner: D, writes: usize) -> Self {
+        Self {
+            inner,
+            writes_left: writes,
+            writes: 0,
+        }
+    }
+
+    /// How many writes reached the disk.
+    pub fn writes(&self) -> usize {
+        self.writes
+    }
+
+    /// The disk as the power failure left it.
+    pub fn into_inner(self) -> D {
+        self.inner
+    }
+}
+
+impl<D: BlockDevice> BlockDevice for FaultyDisk<D> {
+    fn block_count(&self) -> u32 {
+        self.inner.block_count()
+    }
+
+    fn read_block(&mut self, index: u32) -> FsResult<Block> {
+        self.inner.read_block(index)
+    }
+
+    fn write_block(&mut self, index: u32, block: &Block) -> FsResult<()> {
+        if self.writes_left == 0 {
+            return Err(FsError::Io("simulated power loss".into()));
+        }
+        self.writes_left -= 1;
+        self.writes += 1;
+        self.inner.write_block(index, block)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,5 +250,21 @@ mod tests {
         assert!(matches!(FileDisk::open(&path), Err(FsError::BadImage(_))));
         std::fs::remove_file(&path).unwrap();
         assert!(matches!(FileDisk::open(&path), Err(FsError::Io(_))));
+    }
+
+    #[test]
+    fn a_faulty_disk_stops_accepting_writes_for_good() {
+        let mut disk = FaultyDisk::failing_after(MemDisk::new(4), 2);
+        let block = [9; BLOCK_SIZE];
+        assert_eq!(disk.write_block(0, &block), Ok(()));
+        assert_eq!(disk.write_block(1, &block), Ok(()));
+        assert!(matches!(disk.write_block(2, &block), Err(FsError::Io(_))));
+        assert!(matches!(disk.write_block(0, &block), Err(FsError::Io(_))));
+        assert_eq!(disk.writes(), 2);
+
+        // Reads still work, and only the first two writes are on the disk.
+        assert_eq!(disk.read_block(1), Ok(block));
+        let mut survivor = disk.into_inner();
+        assert_eq!(survivor.read_block(2), Ok([0; BLOCK_SIZE]));
     }
 }
