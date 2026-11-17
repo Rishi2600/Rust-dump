@@ -172,3 +172,35 @@ fn directories_and_files_are_not_interchangeable() {
         Err(FsError::NotADirectory(_))
     ));
 }
+
+#[test]
+fn unlinking_a_file_gives_back_its_blocks_and_its_inode() {
+    let mut fs = fresh();
+    fs.write_file("/keep.txt", b"keep").unwrap();
+    let before = fs.usage().unwrap();
+    let number = fs.write_file("/big.bin", &vec![3; 40_000]).unwrap();
+    assert!(fs.usage().unwrap().free_blocks < before.free_blocks - 39);
+
+    fs.unlink("/big.bin").unwrap();
+    assert_eq!(fs.usage().unwrap(), before);
+    assert_eq!(
+        fs.read_file("/big.bin"),
+        Err(FsError::NotFound("/big.bin".into()))
+    );
+    assert_eq!(names(&mut fs, "/"), ["keep.txt"]);
+    // The next file gets the inode number that was just freed.
+    assert_eq!(fs.create("/next"), Ok(number));
+}
+
+#[test]
+fn only_existing_files_can_be_unlinked() {
+    let mut fs = fresh();
+    fs.mkdir("/docs").unwrap();
+    assert_eq!(fs.unlink("/nope"), Err(FsError::NotFound("/nope".into())));
+    assert_eq!(
+        fs.unlink("/docs"),
+        Err(FsError::IsADirectory("/docs".into()))
+    );
+    assert!(matches!(fs.unlink("/"), Err(FsError::InvalidPath(_))));
+    assert_eq!(names(&mut fs, "/"), ["docs"]);
+}

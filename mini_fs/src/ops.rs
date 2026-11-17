@@ -131,6 +131,31 @@ impl<D: BlockDevice> FileSystem<D> {
     }
 }
 
+impl<D: BlockDevice> FileSystem<D> {
+    /// Remove the name `path`. The file itself is deleted only when its
+    /// last name goes.
+    pub fn unlink(&mut self, path: &str) -> FsResult<()> {
+        self.atomic(|fs| {
+            let (chain, name) = fs.walk_parent(path)?;
+            let parent = chain[chain.len() - 1];
+            let found = fs.dir_lookup(parent, name)?;
+            let number = found.ok_or_else(|| FsError::NotFound(path.to_string()))?;
+            let mut inode = fs.read_inode(number)?;
+            if inode.kind != InodeKind::File {
+                return Err(FsError::IsADirectory(path.to_string()));
+            }
+            fs.dir_remove(parent, name)?;
+            inode.nlink = inode.nlink.saturating_sub(1);
+            if inode.nlink > 0 {
+                // Other names still lead here, so the content stays.
+                return fs.write_inode(number, &inode);
+            }
+            fs.release_blocks(&mut inode)?;
+            fs.free_inode(number)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
