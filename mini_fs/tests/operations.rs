@@ -4,6 +4,7 @@ use mini_fs::blockmap::MAX_FILE_SIZE;
 use mini_fs::device::MemDisk;
 use mini_fs::error::FsError;
 use mini_fs::fs::{FileSystem, FormatOptions};
+use mini_fs::inode::InodeKind;
 
 fn fresh() -> FileSystem<MemDisk> {
     FileSystem::format(MemDisk::new(512), FormatOptions::default()).unwrap()
@@ -103,4 +104,71 @@ fn a_failed_create_does_not_leak_an_inode() {
     let before = fs.usage().unwrap();
     assert!(fs.create("/nope/b.txt").is_err());
     assert_eq!(fs.usage().unwrap(), before);
+}
+
+fn names(fs: &mut FileSystem<MemDisk>, path: &str) -> Vec<String> {
+    fs.list(path)
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect()
+}
+
+#[test]
+fn directories_nest_and_list_their_entries_in_name_order() {
+    let mut fs = fresh();
+    fs.mkdir("/docs").unwrap();
+    fs.mkdir("/docs/drafts").unwrap();
+    fs.write_file("/docs/b.txt", b"b").unwrap();
+    fs.write_file("/docs/a.txt", b"a").unwrap();
+    fs.write_file("/docs/drafts/idea.txt", b"?").unwrap();
+
+    assert_eq!(names(&mut fs, "/"), ["docs"]);
+    assert_eq!(names(&mut fs, "/docs"), ["a.txt", "b.txt", "drafts"]);
+    assert_eq!(names(&mut fs, "/docs/drafts"), ["idea.txt"]);
+    assert_eq!(fs.stat("/docs").unwrap().kind, InodeKind::Dir);
+    assert_eq!(fs.read_file("/docs/drafts/idea.txt").unwrap(), b"?");
+}
+
+#[test]
+fn the_same_file_can_be_reached_by_differently_spelled_paths() {
+    let mut fs = fresh();
+    fs.mkdir("/docs").unwrap();
+    let number = fs.write_file("/docs/a.txt", b"a").unwrap();
+    for path in [
+        "docs/a.txt",
+        "/docs/./a.txt",
+        "//docs/../docs/a.txt",
+        "/../docs/a.txt",
+    ] {
+        assert_eq!(fs.resolve(path), Ok(number), "{path}");
+    }
+}
+
+#[test]
+fn directories_and_files_are_not_interchangeable() {
+    let mut fs = fresh();
+    fs.mkdir("/docs").unwrap();
+    fs.write_file("/a.txt", b"a").unwrap();
+    assert_eq!(
+        fs.mkdir("/docs"),
+        Err(FsError::AlreadyExists("/docs".into()))
+    );
+    assert_eq!(
+        fs.mkdir("/a.txt"),
+        Err(FsError::AlreadyExists("/a.txt".into()))
+    );
+    assert!(matches!(fs.list("/a.txt"), Err(FsError::NotADirectory(_))));
+    assert!(matches!(
+        fs.read_file("/docs"),
+        Err(FsError::IsADirectory(_))
+    ));
+    assert!(matches!(
+        fs.write_file("/docs", b"x"),
+        Err(FsError::IsADirectory(_))
+    ));
+    assert!(matches!(
+        fs.mkdir("/a.txt/sub"),
+        Err(FsError::NotADirectory(_))
+    ));
 }

@@ -1,5 +1,6 @@
 use crate::blockmap::MAX_FILE_SIZE;
 use crate::device::BlockDevice;
+use crate::dir::DirEntry;
 use crate::error::{FsError, FsResult};
 use crate::fs::FileSystem;
 use crate::inode::InodeKind;
@@ -109,6 +110,24 @@ impl<D: BlockDevice> FileSystem<D> {
         let mut contents = vec![0; inode.size as usize];
         self.read_at(number, 0, &mut contents)?;
         Ok(contents)
+    }
+}
+
+impl<D: BlockDevice> FileSystem<D> {
+    /// Create an empty directory. Returns its inode number.
+    pub fn mkdir(&mut self, path: &str) -> FsResult<u32> {
+        self.atomic(|fs| fs.make_node(path, InodeKind::Dir))
+    }
+
+    /// The entries of the directory at `path`, sorted by name.
+    pub fn list(&mut self, path: &str) -> FsResult<Vec<DirEntry>> {
+        let number = self.resolve(path)?;
+        if self.read_inode(number)?.kind != InodeKind::Dir {
+            return Err(FsError::NotADirectory(path.to_string()));
+        }
+        let mut entries = self.dir_list(number)?;
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(entries)
     }
 }
 
