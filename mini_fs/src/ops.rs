@@ -182,6 +182,31 @@ impl<D: BlockDevice> FileSystem<D> {
     }
 }
 
+impl<D: BlockDevice> FileSystem<D> {
+    /// Give the file at `existing` a second name, `new`.
+    ///
+    /// Both names are equals: each is just a directory entry holding the
+    /// same inode number, and the inode counts how many there are.
+    pub fn link(&mut self, existing: &str, new: &str) -> FsResult<()> {
+        self.atomic(|fs| {
+            let number = fs.resolve(existing)?;
+            let mut inode = fs.read_inode(number)?;
+            // A second name for a directory could create a loop in the tree.
+            if inode.kind != InodeKind::File {
+                return Err(FsError::IsADirectory(existing.to_string()));
+            }
+            let (chain, name) = fs.walk_parent(new)?;
+            let parent = chain[chain.len() - 1];
+            if fs.dir_lookup(parent, name)?.is_some() {
+                return Err(FsError::AlreadyExists(new.to_string()));
+            }
+            inode.nlink = inode.nlink.checked_add(1).ok_or(FsError::TooManyLinks)?;
+            fs.write_inode(number, &inode)?;
+            fs.dir_add(parent, name, number)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

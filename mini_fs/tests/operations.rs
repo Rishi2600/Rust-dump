@@ -239,3 +239,55 @@ fn rmdir_rejects_files_the_root_and_missing_names() {
     assert_eq!(fs.rmdir("/nope"), Err(FsError::NotFound("/nope".into())));
     assert!(matches!(fs.rmdir("/"), Err(FsError::InvalidPath(_))));
 }
+
+#[test]
+fn two_names_can_share_one_file() {
+    let mut fs = fresh();
+    fs.mkdir("/docs").unwrap();
+    let number = fs.write_file("/report.txt", b"draft").unwrap();
+    fs.link("/report.txt", "/docs/alias.txt").unwrap();
+
+    assert_eq!(fs.resolve("/docs/alias.txt"), Ok(number));
+    assert_eq!(fs.stat("/report.txt").unwrap().links, 2);
+    // There is one file: a change through either name shows through both.
+    fs.write_file("/docs/alias.txt", b"final").unwrap();
+    assert_eq!(fs.read_file("/report.txt").unwrap(), b"final");
+}
+
+#[test]
+fn a_file_lives_until_its_last_name_is_removed() {
+    let mut fs = fresh();
+    let before = fs.usage().unwrap();
+    fs.write_file("/one", &vec![5; 4000]).unwrap();
+    fs.link("/one", "/two").unwrap();
+
+    fs.unlink("/one").unwrap();
+    assert_eq!(fs.read_file("/two").unwrap(), vec![5; 4000]);
+    assert_eq!(fs.stat("/two").unwrap().links, 1);
+
+    fs.unlink("/two").unwrap();
+    let after = fs.usage().unwrap();
+    assert_eq!(after.free_inodes, before.free_inodes);
+    // Everything is back except the block the root directory now owns.
+    assert_eq!(after.free_blocks, before.free_blocks - 1);
+}
+
+#[test]
+fn links_need_an_existing_file_and_an_unused_name() {
+    let mut fs = fresh();
+    fs.mkdir("/docs").unwrap();
+    fs.write_file("/a.txt", b"a").unwrap();
+    assert_eq!(
+        fs.link("/nope", "/b"),
+        Err(FsError::NotFound("/nope".into()))
+    );
+    assert_eq!(
+        fs.link("/docs", "/d2"),
+        Err(FsError::IsADirectory("/docs".into()))
+    );
+    assert_eq!(
+        fs.link("/a.txt", "/docs"),
+        Err(FsError::AlreadyExists("/docs".into()))
+    );
+    assert_eq!(fs.stat("/a.txt").unwrap().links, 1);
+}
