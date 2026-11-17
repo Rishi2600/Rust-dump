@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::bytes::put_u32;
+use crate::bytes::{get_u32, put_u32};
 use crate::device::{BLOCK_SIZE, Block, BlockDevice};
 use crate::error::{FsError, FsResult};
 
@@ -98,6 +98,41 @@ impl<D: BlockDevice> Journal<D> {
         self.device.flush()?;
         self.pending.clear();
         Ok(())
+    }
+}
+
+impl<D: BlockDevice> Journal<D> {
+    /// Finish a transaction that was committed but not fully installed
+    /// before a crash. Returns how many blocks were replayed.
+    ///
+    /// Replaying only copies blocks from the log to their homes, so doing it
+    /// twice gives the same result. A crash during recovery is therefore
+    /// harmless: recovery simply runs again.
+    pub fn recover(&mut self) -> FsResult<usize> {
+        let header = self.device.read_block(self.start)?;
+        let count = get_u32(&header, 0) as usize;
+        if count > self.capacity() {
+            return Err(FsError::Corrupt(format!(
+                "the journal claims {count} blocks but holds at most {}",
+                self.capacity()
+            )));
+        }
+        for slot in 0..count {
+            let home = get_u32(&header, 4 + slot * 4);
+            if home >= self.device.block_count() || self.is_log_block(home) {
+                return Err(FsError::Corrupt(format!(
+                    "the journal wants to replay onto block {home}"
+                )));
+            }
+            let block = self.device.read_block(self.start + 1 + slot as u32)?;
+            self.device.write_block(home, &block)?;
+        }
+        if count > 0 {
+            self.device.flush()?;
+            self.device.write_block(self.start, &[0; BLOCK_SIZE])?;
+            self.device.flush()?;
+        }
+        Ok(count)
     }
 }
 
@@ -217,5 +252,54 @@ mod tests {
         let mut journal = journal();
         journal.commit().unwrap();
         assert_eq!(journal.device(), &MemDisk::new(32));
+    }
+
+    /// A disk as a crash would leave it just after the commit point: two
+    /// blocks logged and named in the header, neither installed yet.
+    fn committed_but_not_installed() -> MemDisk {
+        let mut disk = MemDisk::new(32);
+        disk.write_block(2, &filled(1)).unwrap();
+        disk.write_block(3, &filled(2)).unwrap();
+        let mut header = filled(0);
+        put_u32(&mut header, 0, 2);
+        put_u32(&mut header, 4, 20);
+        put_u32(&mut header, 8, 30);
+        disk.write_block(1, &header).unwrap();
+        disk
+    }
+
+    #[test]
+    fn recovery_replays_a_committed_transaction() {
+        let mut journal = Journal::new(committed_but_not_installed(), 1, 8);
+        assert_eq!(journal.recover(), Ok(2));
+        assert_eq!(journal.read_block(20), Ok(filled(1)));
+        assert_eq!(journal.read_block(30), Ok(filled(2)));
+        // The header is gone, so a second recovery finds nothing to do.
+        assert_eq!(journal.recover(), Ok(0));
+    }
+
+    #[test]
+    fn a_clean_log_needs_no_recovery() {
+        let mut journal = journal();
+        assert_eq!(journal.recover(), Ok(0));
+        assert_eq!(journal.device(), &MemDisk::new(32));
+    }
+
+    #[test]
+    fn a_nonsensical_header_is_reported_not_obeyed() {
+        let mut too_many = MemDisk::new(32);
+        let mut header = filled(0);
+        put_u32(&mut header, 0, 100);
+        too_many.write_block(1, &header).unwrap();
+        let recovered = Journal::new(too_many, 1, 8).recover();
+        assert!(matches!(recovered, Err(FsError::Corrupt(_))));
+
+        // A header that would replay a block on top of the log itself.
+        let mut into_log = committed_but_not_installed();
+        put_u32(&mut header, 0, 1);
+        put_u32(&mut header, 4, 3);
+        into_log.write_block(1, &header).unwrap();
+        let recovered = Journal::new(into_log, 1, 8).recover();
+        assert!(matches!(recovered, Err(FsError::Corrupt(_))));
     }
 }
