@@ -81,6 +81,38 @@ impl<D: BlockDevice> FileSystem<D> {
     }
 }
 
+impl<D: BlockDevice> FileSystem<D> {
+    /// Free every block of a file and leave it empty. The inode is updated
+    /// in memory only: the caller writes it back or frees it.
+    pub fn release_blocks(&mut self, inode: &mut Inode) -> FsResult<()> {
+        for pointer in inode.direct {
+            self.free_tree(pointer, 0)?;
+        }
+        self.free_tree(inode.indirect, 1)?;
+        self.free_tree(inode.double_indirect, 2)?;
+        inode.direct = [0; DIRECT];
+        inode.indirect = 0;
+        inode.double_indirect = 0;
+        inode.size = 0;
+        Ok(())
+    }
+
+    /// Free `block` and everything beneath it. `depth` is how many levels of
+    /// pointer blocks lie between it and the data: 0 for a data block.
+    fn free_tree(&mut self, block: u32, depth: u32) -> FsResult<()> {
+        if block == 0 {
+            return Ok(());
+        }
+        if depth > 0 {
+            let table = self.disk.read_block(block)?;
+            for slot in 0..POINTERS_PER_BLOCK {
+                self.free_tree(get_u32(&table, slot * 4), depth - 1)?;
+            }
+        }
+        self.free_block(block)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,5 +217,28 @@ mod tests {
         // 12 + 256 + 256 * 256 blocks of 1024 bytes: a little over 64 MB.
         assert_eq!(MAX_FILE_BLOCKS, 65_804);
         assert_eq!(MAX_FILE_SIZE, 67_383_296);
+    }
+
+    #[test]
+    fn releasing_a_file_returns_every_block_including_pointer_blocks() {
+        let mut fs = fresh();
+        let before = free_blocks(&mut fs);
+        let file = fs.atomic(|fs| fs.alloc_inode(InodeKind::File)).unwrap();
+        // 300 blocks of content reach into the double indirect range.
+        fs.write_at(file, 0, &vec![7; 300 * BLOCK_SIZE]).unwrap();
+        // 300 data blocks, plus the indirect block, the outer table and one
+        // inner table.
+        assert_eq!(free_blocks(&mut fs), before - 303);
+
+        let mut inode = fs.read_inode(file).unwrap();
+        fs.atomic(|fs| {
+            fs.release_blocks(&mut inode)?;
+            fs.write_inode(file, &inode)
+        })
+        .unwrap();
+        assert_eq!(free_blocks(&mut fs), before);
+        assert_eq!(inode, Inode::new(InodeKind::File));
+        // Releasing an empty file is harmless.
+        assert_eq!(fs.atomic(|fs| fs.release_blocks(&mut inode)), Ok(()));
     }
 }
