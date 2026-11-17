@@ -4,5 +4,6 @@ pub mod bitmap;
 pub mod bytes;
 pub mod device;
 pub mod error;
+pub mod inode;
 pub mod journal;
 pub mod layout;
