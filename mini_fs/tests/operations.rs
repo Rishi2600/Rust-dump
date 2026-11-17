@@ -204,3 +204,38 @@ fn only_existing_files_can_be_unlinked() {
     assert!(matches!(fs.unlink("/"), Err(FsError::InvalidPath(_))));
     assert_eq!(names(&mut fs, "/"), ["docs"]);
 }
+
+#[test]
+fn only_an_empty_directory_can_be_removed() {
+    let mut fs = fresh();
+    fs.mkdir("/outer").unwrap();
+    let before = fs.usage().unwrap();
+    fs.mkdir("/outer/docs").unwrap();
+    fs.write_file("/outer/docs/a.txt", b"a").unwrap();
+
+    let refused = fs.rmdir("/outer/docs");
+    assert_eq!(
+        refused,
+        Err(FsError::DirectoryNotEmpty("/outer/docs".into()))
+    );
+    fs.unlink("/outer/docs/a.txt").unwrap();
+    assert_eq!(fs.rmdir("/outer/docs"), Ok(()));
+    assert!(names(&mut fs, "/outer").is_empty());
+    // The block that held its one-time entry came back with it. The parent
+    // keeps the block its own entry slot lives in.
+    let after = fs.usage().unwrap();
+    assert_eq!(after.free_inodes, before.free_inodes);
+    assert_eq!(after.free_blocks, before.free_blocks - 1);
+}
+
+#[test]
+fn rmdir_rejects_files_the_root_and_missing_names() {
+    let mut fs = fresh();
+    fs.write_file("/a.txt", b"a").unwrap();
+    assert_eq!(
+        fs.rmdir("/a.txt"),
+        Err(FsError::NotADirectory("/a.txt".into()))
+    );
+    assert_eq!(fs.rmdir("/nope"), Err(FsError::NotFound("/nope".into())));
+    assert!(matches!(fs.rmdir("/"), Err(FsError::InvalidPath(_))));
+}

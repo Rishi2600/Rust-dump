@@ -156,6 +156,32 @@ impl<D: BlockDevice> FileSystem<D> {
     }
 }
 
+impl<D: BlockDevice> FileSystem<D> {
+    /// Remove an empty directory.
+    pub fn rmdir(&mut self, path: &str) -> FsResult<()> {
+        self.atomic(|fs| {
+            let (chain, name) = fs.walk_parent(path)?;
+            let parent = chain[chain.len() - 1];
+            let found = fs.dir_lookup(parent, name)?;
+            let number = found.ok_or_else(|| FsError::NotFound(path.to_string()))?;
+            let mut inode = fs.read_inode(number)?;
+            if inode.kind != InodeKind::Dir {
+                return Err(FsError::NotADirectory(path.to_string()));
+            }
+            // Removing a directory that still has entries would strand
+            // everything beneath it.
+            if !fs.dir_list(number)?.is_empty() {
+                return Err(FsError::DirectoryNotEmpty(path.to_string()));
+            }
+            fs.dir_remove(parent, name)?;
+            // An empty directory can still own blocks: the slots of entries
+            // that were removed from it.
+            fs.release_blocks(&mut inode)?;
+            fs.free_inode(number)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
