@@ -1,5 +1,6 @@
+use crate::blockmap::MAX_FILE_SIZE;
 use crate::device::BlockDevice;
-use crate::error::FsResult;
+use crate::error::{FsError, FsResult};
 use crate::fs::FileSystem;
 use crate::inode::InodeKind;
 
@@ -51,6 +52,63 @@ impl<D: BlockDevice> FileSystem<D> {
             inodes: self.sb.inode_count - 1,
             free_inodes: self.sb.inode_count - used_inodes,
         })
+    }
+}
+
+impl<D: BlockDevice> FileSystem<D> {
+    /// One step of a transaction: make an empty file or directory at `path`.
+    fn make_node(&mut self, path: &str, kind: InodeKind) -> FsResult<u32> {
+        let (chain, name) = self.walk_parent(path)?;
+        let parent = chain[chain.len() - 1];
+        if self.dir_lookup(parent, name)?.is_some() {
+            return Err(FsError::AlreadyExists(path.to_string()));
+        }
+        // Two structures change together: an inode is claimed, and a name
+        // for it appears in the parent. The transaction keeps them in step.
+        let number = self.alloc_inode(kind)?;
+        self.dir_add(parent, name, number)?;
+        Ok(number)
+    }
+
+    /// Create an empty file. Returns its inode number.
+    pub fn create(&mut self, path: &str) -> FsResult<u32> {
+        self.atomic(|fs| fs.make_node(path, InodeKind::File))
+    }
+
+    /// Replace the content of the file at `path` with `data`, creating the
+    /// file if it does not exist. Returns its inode number.
+    pub fn write_file(&mut self, path: &str, data: &[u8]) -> FsResult<u32> {
+        // Checked first, so an impossible write does not destroy what is there.
+        if data.len() > MAX_FILE_SIZE {
+            return Err(FsError::FileTooLarge);
+        }
+        let number = self.atomic(|fs| match fs.resolve(path) {
+            Ok(number) => {
+                let mut inode = fs.read_inode(number)?;
+                if inode.kind != InodeKind::File {
+                    return Err(FsError::IsADirectory(path.to_string()));
+                }
+                fs.release_blocks(&mut inode)?;
+                fs.write_inode(number, &inode)?;
+                Ok(number)
+            }
+            Err(FsError::NotFound(_)) => fs.make_node(path, InodeKind::File),
+            Err(other) => Err(other),
+        })?;
+        self.write_at(number, 0, data)?;
+        Ok(number)
+    }
+
+    /// The whole content of the file at `path`.
+    pub fn read_file(&mut self, path: &str) -> FsResult<Vec<u8>> {
+        let number = self.resolve(path)?;
+        let inode = self.read_inode(number)?;
+        if inode.kind != InodeKind::File {
+            return Err(FsError::IsADirectory(path.to_string()));
+        }
+        let mut contents = vec![0; inode.size as usize];
+        self.read_at(number, 0, &mut contents)?;
+        Ok(contents)
     }
 }
 
