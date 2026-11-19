@@ -137,3 +137,74 @@ fn only_reading_methods_are_allowed() {
         StatusCode::OK
     );
 }
+
+#[test]
+fn a_directory_serves_its_index_page() {
+    let files = StaticFiles::new(site("index"));
+    let home = get(&files, "/");
+    assert_eq!(home.status, StatusCode::OK);
+    assert_eq!(text(&home), "<h1>home</h1>");
+    assert_eq!(
+        home.headers.get("Content-Type"),
+        Some("text/html; charset=utf-8")
+    );
+}
+
+#[test]
+fn a_directory_without_its_slash_is_redirected_to_the_one_with() {
+    let root = site("slash");
+    fs::create_dir_all(root.join("my docs")).unwrap();
+    let files = StaticFiles::new(&root);
+    let redirect = get(&files, "/docs");
+    assert_eq!(redirect.status, StatusCode::MOVED_PERMANENTLY);
+    assert_eq!(redirect.headers.get("Location"), Some("/docs/"));
+    // The new address is a URL, so it is encoded again.
+    assert_eq!(
+        get(&files, "/my%20docs").headers.get("Location"),
+        Some("/my%20docs/")
+    );
+}
+
+#[test]
+fn a_directory_without_an_index_is_private_unless_listing_is_on() {
+    let root = site("listing");
+    let closed = StaticFiles::new(&root);
+    assert_eq!(get(&closed, "/docs/").status, StatusCode::FORBIDDEN);
+
+    let open = StaticFiles::new(&root).with_listing(true);
+    let listing = get(&open, "/docs/");
+    assert_eq!(listing.status, StatusCode::OK);
+    let page = text(&listing);
+    assert!(page.contains("<h1>Index of /docs/</h1>"));
+    assert!(page.contains("<a href=\"guide.txt\">guide.txt</a>"));
+    assert!(page.contains("<a href=\"../\">../</a>"));
+    // An index page still wins over a listing where there is one.
+    assert_eq!(text(&get(&open, "/")), "<h1>home</h1>");
+}
+
+#[test]
+fn a_listing_marks_directories_and_hides_dot_files() {
+    let root = site("mixed");
+    fs::remove_file(root.join("index.html")).unwrap();
+    let files = StaticFiles::new(&root).with_listing(true);
+    let page = text(&get(&files, "/"));
+    assert!(page.contains("<a href=\"css/\">css/</a>"));
+    assert!(page.contains("<a href=\"my%20file.txt\">my file.txt</a>"));
+    assert!(!page.contains(".secret"));
+    assert!(!page.contains("../"), "the root has no parent to link to");
+    // Entries come out sorted by name.
+    assert!(page.find("about.html") < page.find("notes.txt"));
+}
+
+#[test]
+fn a_hostile_file_name_cannot_inject_markup_into_a_listing() {
+    let root = site("xss");
+    fs::write(root.join("docs/<img src=x onerror=alert(1)>.txt"), "x").unwrap();
+    fs::write(root.join("docs/a&b \"q\".txt"), "x").unwrap();
+    let files = StaticFiles::new(&root).with_listing(true);
+    let page = text(&get(&files, "/docs/"));
+    assert!(!page.contains("<img"));
+    assert!(page.contains("&lt;img src=x onerror=alert(1)&gt;.txt"));
+    assert!(page.contains("a&amp;b &quot;q&quot;.txt"));
+    assert!(page.contains("href=\"a%26b%20%22q%22.txt\""));
+}
