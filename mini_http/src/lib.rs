@@ -5,5 +5,6 @@ pub mod error;
 pub mod headers;
 pub mod method;
 pub mod percent;
+pub mod request;
 pub mod status;
 pub mod target;
