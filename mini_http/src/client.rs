@@ -1,11 +1,15 @@
-use std::io::Read;
+use std::io::{Read, Write};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+use std::time::Duration;
 
 use crate::error::{HttpError, HttpResult};
 use crate::headers::Headers;
+use crate::method::Method;
 use crate::reader::read_chunked;
 use crate::request::parse_header_line;
 use crate::status::StatusCode;
 use crate::stream::Buffered;
+use crate::url::Url;
 
 /// Bytes allowed for a response's status line and headers.
 const MAX_RESPONSE_HEAD: usize = 64 * 1024;
@@ -106,6 +110,111 @@ fn as_response_error(error: HttpError) -> HttpError {
             HttpError::BadResponse("the response is larger than allowed".into())
         }
         other => other,
+    }
+}
+
+/// Turns a host name into an address.
+///
+/// HTTP knows nothing about how this is done. It needs an address before it
+/// can open a connection, and where the address comes from is somebody
+/// else's business. Keeping that behind a trait is what lets the client run
+/// with a real DNS resolver, a fake one in tests, or none.
+pub trait Resolve {
+    fn resolve(&mut self, host: &str) -> HttpResult<IpAddr>;
+}
+
+/// A resolver that does no looking up: it accepts addresses written out in
+/// full, and `localhost`.
+pub struct LiteralResolver;
+
+impl Resolve for LiteralResolver {
+    fn resolve(&mut self, host: &str) -> HttpResult<IpAddr> {
+        if host == "localhost" {
+            return Ok(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        }
+        host.parse().map_err(|_| {
+            HttpError::Resolve(format!("`{host}` is a name, and no DNS resolver is set up"))
+        })
+    }
+}
+
+/// Sends requests and reads the replies.
+pub struct Client<R> {
+    resolver: R,
+    /// How long to wait to connect, and for each read or write.
+    pub timeout: Duration,
+    /// The largest response body that will be accepted.
+    pub max_body: usize,
+}
+
+impl<R: Resolve> Client<R> {
+    pub fn new(resolver: R) -> Self {
+        Self {
+            resolver,
+            timeout: Duration::from_secs(10),
+            max_body: 16 * 1024 * 1024,
+        }
+    }
+
+    pub fn resolver(&self) -> &R {
+        &self.resolver
+    }
+
+    pub fn get(&mut self, url: &str) -> HttpResult<ClientResponse> {
+        self.send(Method::Get, &Url::parse(url)?, None)
+    }
+
+    pub fn head(&mut self, url: &str) -> HttpResult<ClientResponse> {
+        self.send(Method::Head, &Url::parse(url)?, None)
+    }
+
+    pub fn post(
+        &mut self,
+        url: &str,
+        content_type: &str,
+        body: &[u8],
+    ) -> HttpResult<ClientResponse> {
+        self.send(Method::Post, &Url::parse(url)?, Some((content_type, body)))
+    }
+
+    /// Make one request. `content` is a body and its type, if there is one.
+    pub fn send(
+        &mut self,
+        method: Method,
+        url: &Url,
+        content: Option<(&str, &[u8])>,
+    ) -> HttpResult<ClientResponse> {
+        // Three separate steps, each resting on the one before:
+        // 1. find the address the name stands for,
+        let address = self.resolver.resolve(&url.host)?;
+        // 2. open a TCP connection to it,
+        let target = SocketAddr::new(address, url.port);
+        let mut stream = TcpStream::connect_timeout(&target, self.timeout)?;
+        stream.set_read_timeout(Some(self.timeout))?;
+        stream.set_write_timeout(Some(self.timeout))?;
+
+        // 3. and only then speak HTTP over it.
+        let mut request = format!(
+            "{method} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: mini_http/0.1\r\nAccept: */*\r\nConnection: close\r\n",
+            url.path,
+            url.authority()
+        );
+        let body = content.map_or(&[][..], |(_, body)| body);
+        if let Some((content_type, body)) = content {
+            request.push_str(&format!(
+                "Content-Type: {content_type}\r\nContent-Length: {}\r\n",
+                body.len()
+            ));
+        }
+        request.push_str("\r\n");
+        stream.write_all(request.as_bytes())?;
+        stream.write_all(body)?;
+        stream.flush()?;
+        read_response(
+            &mut Buffered::new(stream),
+            method == Method::Head,
+            self.max_body,
+        )
     }
 }
 
