@@ -120,6 +120,66 @@ impl Head {
     }
 }
 
+/// How a message says where its body ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Framing {
+    /// There is no body.
+    None,
+    /// The body is exactly this many bytes.
+    Length(usize),
+    /// The body arrives in pieces, each announcing its own size.
+    Chunked,
+}
+
+impl Head {
+    /// Work out how the body is delimited.
+    ///
+    /// TCP is a stream with no message boundaries, so the headers are the
+    /// only thing that says where one request stops and the next begins. If
+    /// two servers in a chain read that differently, an attacker can hide a
+    /// second request inside the first ("request smuggling"). Every
+    /// ambiguous case is therefore an error, never a guess.
+    pub fn framing(&self) -> HttpResult<Framing> {
+        let lengths: Vec<&str> = self.headers.get_all("Content-Length").collect();
+        if let Some(encoding) = self.headers.get("Transfer-Encoding") {
+            if !lengths.is_empty() {
+                return Err(HttpError::BadRequest(
+                    "both Content-Length and Transfer-Encoding are present".into(),
+                ));
+            }
+            if self.version == Version::Http10 {
+                return Err(HttpError::BadRequest(
+                    "HTTP/1.0 has no transfer encodings".into(),
+                ));
+            }
+            let repeated = self.headers.get_all("Transfer-Encoding").count() > 1;
+            if repeated || !encoding.eq_ignore_ascii_case("chunked") {
+                return Err(HttpError::NotImplemented(format!(
+                    "the transfer encoding `{encoding}`"
+                )));
+            }
+            return Ok(Framing::Chunked);
+        }
+        let Some(first) = lengths.first() else {
+            return Ok(Framing::None);
+        };
+        // A repeated length is harmless only if every copy says the same.
+        if lengths.iter().any(|length| length != first) {
+            return Err(HttpError::BadRequest(
+                "conflicting Content-Length headers".into(),
+            ));
+        }
+        if first.is_empty() || !first.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(HttpError::BadRequest(format!(
+                "`{first}` is not a content length"
+            )));
+        }
+        // All digits, yet too big for a number: certainly too big to accept.
+        let length = first.parse().map_err(|_| HttpError::BodyTooLarge)?;
+        Ok(Framing::Length(length))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,5 +283,61 @@ mod tests {
         assert!(bad_request(Head::parse(
             "GET / HTTP/1.1\r\nHost: x\r\n folded"
         )));
+    }
+
+    fn framing_of(headers: &str) -> HttpResult<Framing> {
+        Head::parse(&format!("POST / HTTP/1.1\r\nHost: x{headers}"))
+            .unwrap()
+            .framing()
+    }
+
+    #[test]
+    fn the_headers_say_where_the_body_ends() {
+        assert_eq!(framing_of(""), Ok(Framing::None));
+        assert_eq!(
+            framing_of("\r\nContent-Length: 42"),
+            Ok(Framing::Length(42))
+        );
+        assert_eq!(framing_of("\r\nContent-Length: 0"), Ok(Framing::Length(0)));
+        assert_eq!(
+            framing_of("\r\nTransfer-Encoding: chunked"),
+            Ok(Framing::Chunked)
+        );
+        assert_eq!(
+            framing_of("\r\nTransfer-Encoding: Chunked"),
+            Ok(Framing::Chunked)
+        );
+    }
+
+    #[test]
+    fn ambiguous_framing_is_an_error_not_a_guess() {
+        // The two classic request smuggling setups.
+        let both = framing_of("\r\nContent-Length: 5\r\nTransfer-Encoding: chunked");
+        assert!(bad_request(both));
+        let differing = framing_of("\r\nContent-Length: 5\r\nContent-Length: 6");
+        assert!(bad_request(differing));
+        // Identical repeats agree, so they are allowed.
+        let same = framing_of("\r\nContent-Length: 5\r\nContent-Length: 5");
+        assert_eq!(same, Ok(Framing::Length(5)));
+    }
+
+    #[test]
+    fn lengths_must_be_plain_decimal_numbers() {
+        for bad in ["-1", "+5", "5 5", "0x10", "five", "", "1,1"] {
+            assert!(
+                bad_request(framing_of(&format!("\r\nContent-Length: {bad}"))),
+                "{bad:?}"
+            );
+        }
+        let huge = framing_of("\r\nContent-Length: 99999999999999999999999999");
+        assert_eq!(huge, Err(HttpError::BodyTooLarge));
+    }
+
+    #[test]
+    fn unknown_transfer_encodings_are_not_implemented() {
+        let gzip = framing_of("\r\nTransfer-Encoding: gzip, chunked");
+        assert!(matches!(gzip, Err(HttpError::NotImplemented(_))));
+        let old = Head::parse("POST / HTTP/1.0\r\nTransfer-Encoding: chunked").unwrap();
+        assert!(bad_request(old.framing()));
     }
 }
