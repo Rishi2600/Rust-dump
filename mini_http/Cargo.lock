@@ -3,5 +3,12 @@
 version = 4
 
 [[package]]
+name = "mini_dns_resolver"
+version = "0.1.0"
+
+[[package]]
 name = "mini_http"
 version = "0.1.0"
+dependencies = [
+ "mini_dns_resolver",
+]

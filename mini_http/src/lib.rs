@@ -3,6 +3,7 @@
 pub mod client;
 pub mod connection;
 pub mod date;
+pub mod dns;
 pub mod error;
 pub mod files;
 pub mod headers;
