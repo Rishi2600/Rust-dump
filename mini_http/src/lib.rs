@@ -19,3 +19,4 @@ pub mod service;
 pub mod status;
 pub mod stream;
 pub mod target;
+pub mod url;
