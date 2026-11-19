@@ -3,6 +3,7 @@
 pub mod connection;
 pub mod date;
 pub mod error;
+pub mod files;
 pub mod headers;
 pub mod method;
 pub mod mime;
