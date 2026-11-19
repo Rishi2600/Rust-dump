@@ -20,16 +20,61 @@ impl Params {
 /// The code that answers requests for one route.
 pub type Handler = Box<dyn Fn(&Request, &Params) -> Response + Send + Sync>;
 
+/// One piece of a route pattern, between slashes.
+enum Segment {
+    /// Must appear exactly: the `users` in `/users/:id`.
+    Literal(String),
+    /// Matches any one segment and remembers it: the `:id`.
+    Param(String),
+    /// Matches everything that is left, slashes included: `*path`.
+    Rest(String),
+}
+
+fn parse_pattern(pattern: &str) -> Vec<Segment> {
+    let parts = pattern.trim_start_matches('/').split('/');
+    let segments = parts.map(|part| {
+        if let Some(name) = part.strip_prefix(':') {
+            Segment::Param(name.to_string())
+        } else if let Some(name) = part.strip_prefix('*') {
+            Segment::Rest(name.to_string())
+        } else {
+            Segment::Literal(part.to_string())
+        }
+    });
+    segments.collect()
+}
+
 struct Route {
     method: Method,
-    pattern: String,
+    segments: Vec<Segment>,
     handler: Handler,
 }
 
 impl Route {
     /// Whether this route's pattern fits `path`, and what it captured.
     fn matches(&self, path: &str) -> Option<Params> {
-        (self.pattern == path).then(Params::default)
+        let mut params = Params::default();
+        let mut parts = path.trim_start_matches('/').split('/');
+        for segment in &self.segments {
+            match segment {
+                Segment::Literal(expected) => {
+                    if parts.next()? != expected {
+                        return None;
+                    }
+                }
+                Segment::Param(name) => {
+                    let part = parts.next().filter(|part| !part.is_empty())?;
+                    params.values.push((name.clone(), part.to_string()));
+                }
+                Segment::Rest(name) => {
+                    let rest: Vec<&str> = parts.collect();
+                    params.values.push((name.clone(), rest.join("/")));
+                    return Some(params);
+                }
+            }
+        }
+        // The path must not have segments the pattern did not account for.
+        parts.next().is_none().then_some(params)
     }
 }
 
@@ -54,7 +99,7 @@ impl Router {
     ) -> Self {
         self.routes.push(Route {
             method,
-            pattern: pattern.to_string(),
+            segments: parse_pattern(pattern),
             handler: Box::new(handler),
         });
         self
@@ -147,5 +192,71 @@ mod tests {
         let router = Router::new().get("/", fixed("home"));
         let service: &dyn Service = &router;
         assert_eq!(text(&service.call(&request("GET", "/"))), "home");
+    }
+
+    #[test]
+    fn a_named_segment_captures_part_of_the_path() {
+        let router = Router::new().get("/users/:id/posts/:post", |_, params| {
+            let (id, post) = (params.get("id").unwrap(), params.get("post").unwrap());
+            Response::text(StatusCode::OK, format!("user {id}, post {post}"))
+        });
+        let found = router.respond(&request("GET", "/users/42/posts/hello-world"));
+        assert_eq!(text(&found), "user 42, post hello-world");
+        // The captured value arrives already decoded.
+        let spaced = router.respond(&request("GET", "/users/a%20b/posts/1"));
+        assert_eq!(text(&spaced), "user a b, post 1");
+
+        for path in [
+            "/users/42",
+            "/users/42/posts",
+            "/users/42/posts/1/extra",
+            "/users//posts/1",
+        ] {
+            assert_eq!(
+                router.respond(&request("GET", path)).status,
+                StatusCode::NOT_FOUND,
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wildcard_captures_everything_that_is_left() {
+        let router = Router::new().get("/files/*path", |_, params| {
+            Response::text(StatusCode::OK, format!("[{}]", params.get("path").unwrap()))
+        });
+        assert_eq!(
+            text(&router.respond(&request("GET", "/files/a.txt"))),
+            "[a.txt]"
+        );
+        assert_eq!(
+            text(&router.respond(&request("GET", "/files/css/site/main.css"))),
+            "[css/site/main.css]"
+        );
+        assert_eq!(text(&router.respond(&request("GET", "/files/"))), "[]");
+        assert_eq!(
+            router.respond(&request("GET", "/other/a.txt")).status,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[test]
+    fn earlier_routes_win_over_later_ones() {
+        let router = Router::new()
+            .get("/users/me", fixed("that is you"))
+            .get("/users/:id", |_, params| {
+                Response::text(StatusCode::OK, params.get("id").unwrap())
+            })
+            .get("/*anything", fixed("fallback"));
+        assert_eq!(
+            text(&router.respond(&request("GET", "/users/me"))),
+            "that is you"
+        );
+        assert_eq!(text(&router.respond(&request("GET", "/users/7"))), "7");
+        assert_eq!(
+            text(&router.respond(&request("GET", "/elsewhere/deep"))),
+            "fallback"
+        );
+        assert_eq!(text(&router.respond(&request("GET", "/"))), "fallback");
     }
 }
