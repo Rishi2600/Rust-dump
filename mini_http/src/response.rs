@@ -1,5 +1,5 @@
 use std::fmt;
-use std::io::Write;
+use std::io::{ErrorKind, Read, Write};
 use std::time::SystemTime;
 
 use crate::date::http_date;
@@ -12,12 +12,15 @@ use crate::status::StatusCode;
 pub enum Body {
     /// Content held in memory, whose length is therefore known.
     Bytes(Vec<u8>),
+    /// Content produced as it is sent, whose length is not known up front.
+    Stream(Box<dyn Read + Send>),
 }
 
 impl fmt::Debug for Body {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Body::Bytes(bytes) => write!(f, "Bytes({} bytes)", bytes.len()),
+            Body::Stream(_) => write!(f, "Stream"),
         }
     }
 }
@@ -73,10 +76,18 @@ impl Response {
         Self::text(status, format!("{status}: {location}\n")).header("Location", location)
     }
 
+    /// A response whose body is read from `source` while it is being sent.
+    pub fn stream(status: StatusCode, source: impl Read + Send + 'static) -> Self {
+        let mut response = Self::new(status);
+        response.body = Body::Stream(Box::new(source));
+        response
+    }
+
     /// The body, when it is held in memory.
     pub fn bytes(&self) -> Option<&[u8]> {
         match &self.body {
             Body::Bytes(bytes) => Some(bytes),
+            Body::Stream(_) => None,
         }
     }
 }
@@ -115,19 +126,41 @@ pub fn write_response<W: Write>(
         mut headers,
         body,
     } = response;
-    let keep_alive = options.keep_alive;
+    let mut keep_alive = options.keep_alive;
     let sends_body = status.allows_body();
 
     if !headers.contains("Date") {
         headers.set("Date", &http_date(options.now));
     }
-    // The length is what lets the client find the end of this response and
-    // the start of the next one on the same connection. It is computed here,
-    // so a handler cannot get it wrong.
-    match &body {
-        Body::Bytes(bytes) if sends_body => headers.set("Content-Length", &bytes.len().to_string()),
-        Body::Bytes(_) => headers.remove("Content-Length"),
-    }
+    // The client must be able to find the end of this response, or it cannot
+    // find the start of the next one on the same connection.
+    let chunked = match &body {
+        // A body in memory has a length. It is computed here, so a handler
+        // cannot get it wrong.
+        Body::Bytes(bytes) => {
+            if sends_body {
+                headers.set("Content-Length", &bytes.len().to_string());
+            } else {
+                headers.remove("Content-Length");
+            }
+            false
+        }
+        Body::Stream(_) => {
+            headers.remove("Content-Length");
+            if !sends_body {
+                false
+            } else if options.version == Version::Http11 {
+                // No length is known, so the body goes out in sized chunks.
+                headers.set("Transfer-Encoding", "chunked");
+                true
+            } else {
+                // HTTP/1.0 has no chunks. The only way left to mark the end
+                // of the body is to close the connection.
+                keep_alive = false;
+                false
+            }
+        }
+    };
     headers.set(
         "Connection",
         if keep_alive { "keep-alive" } else { "close" },
@@ -143,10 +176,37 @@ pub fn write_response<W: Write>(
     if sends_body && !options.head_only {
         match body {
             Body::Bytes(bytes) => out.write_all(&bytes)?,
+            Body::Stream(mut source) => copy_stream(&mut source, out, chunked)?,
         }
     }
     out.flush()?;
     Ok(keep_alive)
+}
+
+/// Copy `source` to `out` until it runs dry, optionally as chunks: each one
+/// its size in hexadecimal, a line break, the bytes, and a line break, with
+/// a chunk of size zero to finish.
+fn copy_stream<W: Write>(source: &mut dyn Read, out: &mut W, chunked: bool) -> HttpResult<()> {
+    let mut buffer = [0; 8192];
+    loop {
+        let count = match source.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => count,
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if chunked {
+            write!(out, "{count:x}\r\n")?;
+        }
+        out.write_all(&buffer[..count])?;
+        if chunked {
+            out.write_all(b"\r\n")?;
+        }
+    }
+    if chunked {
+        out.write_all(b"0\r\n\r\n")?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -284,5 +344,67 @@ mod tests {
         let text = written(dated, &options());
         assert!(text.contains("Date: Thu, 01 Jan 1970 00:00:00 GMT\r\n"));
         assert!(!text.contains("1994"));
+    }
+
+    /// A source that hands over one prepared piece per read.
+    struct Pieces(Vec<&'static str>);
+
+    impl Read for Pieces {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.0.is_empty() {
+                return Ok(0);
+            }
+            let piece = self.0.remove(0).as_bytes();
+            buf[..piece.len()].copy_from_slice(piece);
+            Ok(piece.len())
+        }
+    }
+
+    fn streamed() -> Response {
+        Response::stream(
+            StatusCode::OK,
+            Pieces(vec!["hello", " wor", "ld, this is longer"]),
+        )
+    }
+
+    #[test]
+    fn a_stream_of_unknown_length_is_sent_in_chunks() {
+        let text = written(streamed(), &options());
+        let (head, body) = text.split_once("\r\n\r\n").unwrap();
+        assert!(head.contains("Transfer-Encoding: chunked"));
+        assert!(!head.contains("Content-Length"));
+        // 0x12 is 18, the length of the last piece.
+        assert_eq!(
+            body,
+            "5\r\nhello\r\n4\r\n wor\r\n12\r\nld, this is longer\r\n0\r\n\r\n"
+        );
+
+        // Our own chunk decoder reads it back.
+        let mut reader = crate::stream::Buffered::new(body.as_bytes());
+        let decoded = crate::reader::read_chunked(&mut reader, 1000).unwrap();
+        assert_eq!(decoded, b"hello world, this is longer");
+    }
+
+    #[test]
+    fn an_http_1_0_client_gets_the_stream_ended_by_closing() {
+        let old_client = WriteOptions {
+            version: Version::Http10,
+            ..options()
+        };
+        let mut out = Vec::new();
+        let reusable = write_response(&mut out, streamed(), &old_client);
+        // The connection cannot be reused, whatever the client asked for.
+        assert_eq!(reusable, Ok(false));
+        let text = String::from_utf8(out).unwrap();
+        let (head, body) = text.split_once("\r\n\r\n").unwrap();
+        assert!(head.contains("Connection: close") && !head.contains("chunked"));
+        assert_eq!(body, "hello world, this is longer");
+    }
+
+    #[test]
+    fn a_streamed_response_has_no_bytes_to_inspect() {
+        let response = streamed();
+        assert_eq!(response.bytes(), None);
+        assert_eq!(format!("{:?}", response.body), "Stream");
     }
 }
