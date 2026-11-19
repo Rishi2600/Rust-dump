@@ -3,4 +3,5 @@
 pub mod error;
 pub mod headers;
 pub mod method;
+pub mod percent;
 pub mod status;
