@@ -1,0 +1,2 @@
+This directory has no index.html.
+Start the server with --list to see its contents listed.
