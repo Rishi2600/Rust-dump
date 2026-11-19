@@ -7,6 +7,7 @@ pub mod method;
 pub mod percent;
 pub mod reader;
 pub mod request;
+pub mod response;
 pub mod status;
 pub mod stream;
 pub mod target;
