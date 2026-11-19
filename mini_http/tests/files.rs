@@ -208,3 +208,100 @@ fn a_hostile_file_name_cannot_inject_markup_into_a_listing() {
     assert!(page.contains("a&amp;b &quot;q&quot;.txt"));
     assert!(page.contains("href=\"a%26b%20%22q%22.txt\""));
 }
+
+#[test]
+fn every_file_response_carries_validators() {
+    let files = StaticFiles::new(site("validators"));
+    let response = get(&files, "/notes.txt");
+    let etag = response.headers.get("ETag").unwrap();
+    assert!(etag.starts_with("\"a-") && etag.ends_with('"'), "{etag}");
+    assert!(
+        response
+            .headers
+            .get("Last-Modified")
+            .unwrap()
+            .ends_with(" GMT")
+    );
+}
+
+#[test]
+fn a_client_with_a_current_copy_is_told_not_modified() {
+    let files = StaticFiles::new(site("etag"));
+    let first = get(&files, "/notes.txt");
+    let etag = first.headers.get("ETag").unwrap().to_string();
+
+    let again = request_with(
+        &files,
+        "GET",
+        "/notes.txt",
+        &format!("If-None-Match: {etag}\r\n"),
+    );
+    assert_eq!(again.status, StatusCode::NOT_MODIFIED);
+    assert_eq!(again.headers.get("ETag"), Some(etag.as_str()));
+    assert_eq!(again.bytes(), Some(&b""[..]));
+
+    // One of several tags, or a weak one, still counts as a match.
+    let several = format!("If-None-Match: \"other\", W/{etag}\r\n");
+    assert_eq!(
+        request_with(&files, "GET", "/notes.txt", &several).status,
+        StatusCode::NOT_MODIFIED
+    );
+    let stale = request_with(&files, "GET", "/notes.txt", "If-None-Match: \"stale\"\r\n");
+    assert_eq!(stale.status, StatusCode::OK);
+    assert_eq!(text(&stale), "0123456789");
+}
+
+#[test]
+fn a_changed_file_gets_a_new_tag_and_is_sent_again() {
+    let root = site("changed");
+    let files = StaticFiles::new(&root);
+    let etag = get(&files, "/notes.txt")
+        .headers
+        .get("ETag")
+        .unwrap()
+        .to_string();
+    fs::write(root.join("notes.txt"), "a longer second version").unwrap();
+
+    let after = request_with(
+        &files,
+        "GET",
+        "/notes.txt",
+        &format!("If-None-Match: {etag}\r\n"),
+    );
+    assert_eq!(after.status, StatusCode::OK);
+    assert_eq!(text(&after), "a longer second version");
+    assert_ne!(after.headers.get("ETag"), Some(etag.as_str()));
+}
+
+#[test]
+fn the_date_of_the_clients_copy_works_as_a_validator_too() {
+    let files = StaticFiles::new(site("since"));
+    let modified = get(&files, "/notes.txt")
+        .headers
+        .get("Last-Modified")
+        .unwrap()
+        .to_string();
+
+    let same = format!("If-Modified-Since: {modified}\r\n");
+    assert_eq!(
+        request_with(&files, "GET", "/notes.txt", &same).status,
+        StatusCode::NOT_MODIFIED
+    );
+    let old = "If-Modified-Since: Thu, 01 Jan 1970 00:00:00 GMT\r\n";
+    assert_eq!(
+        request_with(&files, "GET", "/notes.txt", old).status,
+        StatusCode::OK
+    );
+    let garbled = "If-Modified-Since: last tuesday\r\n";
+    assert_eq!(
+        request_with(&files, "GET", "/notes.txt", garbled).status,
+        StatusCode::OK
+    );
+
+    // When both are sent, the tag is believed and the date ignored.
+    let both = format!("If-None-Match: \"stale\"\r\nIf-Modified-Since: {modified}\r\n");
+    assert_eq!(
+        request_with(&files, "GET", "/notes.txt", &both).status,
+        StatusCode::OK
+    );
+}

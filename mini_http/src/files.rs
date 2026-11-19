@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::date::{http_date, parse_http_date};
 use crate::method::Method;
 use crate::mime::mime_type;
 use crate::percent::percent_encode;
@@ -58,26 +60,39 @@ impl StaticFiles {
             return Response::error(StatusCode::METHOD_NOT_ALLOWED).header("Allow", "GET, HEAD");
         }
         match self.locate(path) {
-            Some(found) if found.is_file() => self.send_file(&found),
-            Some(found) if found.is_dir() => self.send_directory(path, &found),
+            Some(found) if found.is_file() => self.send_file(request, &found),
+            Some(found) if found.is_dir() => self.send_directory(request, path, &found),
             _ => Response::error(StatusCode::NOT_FOUND),
         }
     }
 
-    fn send_file(&self, file: &Path) -> Response {
-        match fs::read(file) {
-            Ok(contents) => Response::new(StatusCode::OK)
-                .header("Content-Type", mime_type(file))
-                .body(contents),
-            // It was there a moment ago. Gone or unreadable now is the same
-            // to the client as never having existed.
-            Err(_) => Response::error(StatusCode::NOT_FOUND),
+    fn send_file(&self, request: &Request, file: &Path) -> Response {
+        // It was there a moment ago. Gone or unreadable now is the same to
+        // the client as never having existed.
+        let (Ok(contents), Ok(metadata)) = (fs::read(file), fs::metadata(file)) else {
+            return Response::error(StatusCode::NOT_FOUND);
+        };
+        let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
+        let etag = entity_tag(contents.len() as u64, modified);
+        // Both validators go on every answer, so the client can quote them
+        // back the next time it wants this file.
+        let validated = |response: Response| {
+            response
+                .header("ETag", &etag)
+                .header("Last-Modified", &http_date(modified))
+        };
+        if is_unchanged(request, &etag, modified) {
+            // The client's copy is still good. Saying so costs a few header
+            // lines instead of the whole file.
+            return validated(Response::new(StatusCode::NOT_MODIFIED));
         }
+        let response = Response::new(StatusCode::OK).body(contents);
+        validated(response.header("Content-Type", mime_type(file)))
     }
 }
 
 impl StaticFiles {
-    fn send_directory(&self, path: &str, directory: &Path) -> Response {
+    fn send_directory(&self, request: &Request, path: &str, directory: &Path) -> Response {
         // A page's relative links are resolved against its URL. Seen from
         // `/docs`, a link to `guide.txt` means `/guide.txt`; seen from
         // `/docs/` it means `/docs/guide.txt`. So a directory is only ever
@@ -89,7 +104,7 @@ impl StaticFiles {
         }
         let index = directory.join("index.html");
         if index.is_file() {
-            return self.send_file(&index);
+            return self.send_file(request, &index);
         }
         if !self.listing {
             return Response::error(StatusCode::FORBIDDEN);
@@ -99,6 +114,38 @@ impl StaticFiles {
             Err(_) => Response::error(StatusCode::NOT_FOUND),
         }
     }
+}
+
+/// A short fingerprint of a file's current state, for the `ETag` header.
+///
+/// It only has to change whenever the file does. Size and modification time
+/// together are a cheap approximation of that, with no need to hash the
+/// contents on every request.
+pub fn entity_tag(length: u64, modified: SystemTime) -> String {
+    format!("\"{length:x}-{:x}\"", whole_seconds(modified))
+}
+
+fn whole_seconds(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
+/// Whether the copy the client says it already has is still current.
+pub fn is_unchanged(request: &Request, etag: &str, modified: SystemTime) -> bool {
+    // `If-None-Match: "abc", "def"` lists the tags of copies the client
+    // holds. When it is sent, it decides the matter on its own.
+    if let Some(known) = request.header("If-None-Match") {
+        let mut tags = known
+            .split(',')
+            .map(|tag| tag.trim().trim_start_matches("W/"));
+        return tags.any(|tag| tag == etag || tag == "*");
+    }
+    // `If-Modified-Since` is the older way: the date of the client's copy.
+    // Header dates have no fractions of a second, so neither does this.
+    let since = request
+        .header("If-Modified-Since")
+        .and_then(parse_http_date);
+    since.is_some_and(|since| whole_seconds(modified) <= whole_seconds(since))
 }
 
 /// Build a page linking to everything in a directory.
