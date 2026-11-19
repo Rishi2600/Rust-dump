@@ -122,16 +122,38 @@ impl Router {
     }
 
     /// Find the route for `request` and run its handler.
+    ///
+    /// There are two ways to find nothing, and they mean different things.
+    /// If no route knows the path, the answer is 404. If routes know the
+    /// path but not with this method, the answer is 405, with an `Allow`
+    /// header listing the methods that would work.
     pub fn respond(&self, request: &Request) -> Response {
+        // A HEAD request is answered by the GET route. The body the handler
+        // produces is dropped when the response is written.
+        let wanted = match request.method {
+            Method::Head => Method::Get,
+            other => other,
+        };
+        let mut allowed = Vec::new();
         for route in &self.routes {
-            if route.method != request.method {
+            let Some(params) = route.matches(request.path()) else {
                 continue;
-            }
-            if let Some(params) = route.matches(request.path()) {
+            };
+            if route.method == wanted {
                 return (route.handler)(request, &params);
             }
+            allowed.push(route.method);
         }
-        Response::error(StatusCode::NOT_FOUND)
+        if allowed.is_empty() {
+            return Response::error(StatusCode::NOT_FOUND);
+        }
+        if allowed.contains(&Method::Get) {
+            allowed.push(Method::Head);
+        }
+        allowed.sort();
+        allowed.dedup();
+        let names: Vec<&str> = allowed.iter().map(|method| method.as_str()).collect();
+        Response::error(StatusCode::METHOD_NOT_ALLOWED).header("Allow", &names.join(", "))
     }
 }
 
@@ -258,5 +280,40 @@ mod tests {
             "fallback"
         );
         assert_eq!(text(&router.respond(&request("GET", "/"))), "fallback");
+    }
+
+    #[test]
+    fn a_known_path_with_the_wrong_method_is_405_not_404() {
+        let router = Router::new()
+            .get("/items/:id", fixed("item"))
+            .add(Method::Delete, "/items/:id", fixed("deleted"))
+            .post("/items", fixed("created"));
+
+        let wrong = router.respond(&request("PUT", "/items/7"));
+        assert_eq!(wrong.status, StatusCode::METHOD_NOT_ALLOWED);
+        // HEAD is listed because GET is supported.
+        assert_eq!(wrong.headers.get("Allow"), Some("GET, HEAD, DELETE"));
+
+        let wrong = router.respond(&request("GET", "/items"));
+        assert_eq!(wrong.headers.get("Allow"), Some("POST"));
+        assert_eq!(
+            router.respond(&request("PUT", "/nowhere")).status,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[test]
+    fn head_is_answered_by_the_get_route() {
+        let router = Router::new()
+            .get("/page", fixed("content"))
+            .post("/form", fixed("ok"));
+        let head = router.respond(&request("HEAD", "/page"));
+        assert_eq!(head.status, StatusCode::OK);
+        assert_eq!(text(&head), "content");
+        // There is no GET for /form, so there is no HEAD for it either.
+        assert_eq!(
+            router.respond(&request("HEAD", "/form")).status,
+            StatusCode::METHOD_NOT_ALLOWED
+        );
     }
 }
