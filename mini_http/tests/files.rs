@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use mini_http::files::StaticFiles;
+use mini_http::files::{ByteRange, StaticFiles, parse_range};
 use mini_http::reader::parse_request;
 use mini_http::response::Response;
 use mini_http::service::Service;
@@ -303,5 +303,78 @@ fn the_date_of_the_clients_copy_works_as_a_validator_too() {
     assert_eq!(
         request_with(&files, "GET", "/notes.txt", &both).status,
         StatusCode::OK
+    );
+}
+
+#[test]
+fn the_three_forms_of_range_are_understood() {
+    let part = |first, last| ByteRange::Part { first, last };
+    assert_eq!(parse_range("bytes=0-499", 1000), part(0, 499));
+    assert_eq!(parse_range("bytes=500-", 1000), part(500, 999));
+    assert_eq!(parse_range("bytes=-200", 1000), part(800, 999));
+    // Asking for more than there is gives what there is.
+    assert_eq!(parse_range("bytes=900-5000", 1000), part(900, 999));
+    assert_eq!(parse_range("bytes=-5000", 1000), part(0, 999));
+    assert_eq!(parse_range("bytes=0-0", 1000), part(0, 0));
+}
+
+#[test]
+fn ranges_beyond_the_file_cannot_be_satisfied() {
+    assert_eq!(parse_range("bytes=1000-", 1000), ByteRange::Unsatisfiable);
+    assert_eq!(
+        parse_range("bytes=2000-3000", 1000),
+        ByteRange::Unsatisfiable
+    );
+    assert_eq!(parse_range("bytes=-0", 1000), ByteRange::Unsatisfiable);
+    assert_eq!(parse_range("bytes=0-", 0), ByteRange::Unsatisfiable);
+}
+
+#[test]
+fn ranges_that_make_no_sense_are_ignored() {
+    for header in [
+        "bytes=",
+        "bytes=-",
+        "bytes=abc-def",
+        "bytes=5-2",
+        "lines=1-2",
+        "bytes=0-1,5-6",
+        "0-499",
+    ] {
+        assert_eq!(parse_range(header, 1000), ByteRange::Whole, "{header}");
+    }
+}
+
+#[test]
+fn a_range_request_gets_just_those_bytes() {
+    let files = StaticFiles::new(site("range"));
+    let whole = get(&files, "/notes.txt");
+    assert_eq!(whole.headers.get("Accept-Ranges"), Some("bytes"));
+
+    let middle = request_with(&files, "GET", "/notes.txt", "Range: bytes=2-5\r\n");
+    assert_eq!(middle.status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(text(&middle), "2345");
+    assert_eq!(middle.headers.get("Content-Range"), Some("bytes 2-5/10"));
+
+    let tail = request_with(&files, "GET", "/notes.txt", "Range: bytes=-3\r\n");
+    assert_eq!(
+        (text(&tail).as_str(), tail.headers.get("Content-Range")),
+        ("789", Some("bytes 7-9/10"))
+    );
+    // Resuming a download: everything from byte 6 on.
+    let rest = request_with(&files, "GET", "/notes.txt", "Range: bytes=6-\r\n");
+    assert_eq!(text(&rest), "6789");
+}
+
+#[test]
+fn an_impossible_range_is_refused_with_the_real_length() {
+    let files = StaticFiles::new(site("range416"));
+    let beyond = request_with(&files, "GET", "/notes.txt", "Range: bytes=50-60\r\n");
+    assert_eq!(beyond.status, StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(beyond.headers.get("Content-Range"), Some("bytes */10"));
+    // A range that cannot be parsed is answered with the whole file.
+    let odd = request_with(&files, "GET", "/notes.txt", "Range: bytes=x-y\r\n");
+    assert_eq!(
+        (odd.status, text(&odd).as_str()),
+        (StatusCode::OK, "0123456789")
     );
 }

@@ -86,8 +86,23 @@ impl StaticFiles {
             // lines instead of the whole file.
             return validated(Response::new(StatusCode::NOT_MODIFIED));
         }
-        let response = Response::new(StatusCode::OK).body(contents);
-        validated(response.header("Content-Type", mime_type(file)))
+        let length = contents.len() as u64;
+        let range = request
+            .header("Range")
+            .map_or(ByteRange::Whole, |header| parse_range(header, length));
+        let response = match range {
+            ByteRange::Whole => Response::new(StatusCode::OK).body(contents),
+            ByteRange::Part { first, last } => Response::new(StatusCode::PARTIAL_CONTENT)
+                .header("Content-Range", &format!("bytes {first}-{last}/{length}"))
+                .body(&contents[first as usize..=last as usize]),
+            ByteRange::Unsatisfiable => {
+                // Telling the client the real length lets it ask again sensibly.
+                return Response::error(StatusCode::RANGE_NOT_SATISFIABLE)
+                    .header("Content-Range", &format!("bytes */{length}"));
+            }
+        };
+        let response = response.header("Content-Type", mime_type(file));
+        validated(response.header("Accept-Ranges", "bytes"))
     }
 }
 
@@ -146,6 +161,67 @@ pub fn is_unchanged(request: &Request, etag: &str, modified: SystemTime) -> bool
         .header("If-Modified-Since")
         .and_then(parse_http_date);
     since.is_some_and(|since| whole_seconds(modified) <= whole_seconds(since))
+}
+
+/// Which part of a file a `Range` header asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByteRange {
+    /// No usable range: send everything.
+    Whole,
+    /// Bytes `first` to `last`, both included.
+    Part { first: u64, last: u64 },
+    /// A range that lies entirely beyond the end of the file.
+    Unsatisfiable,
+}
+
+/// Interpret a `Range` header for a file of `length` bytes.
+///
+/// This is what lets a download resume after a dropped connection, and a
+/// video player jump to the middle of a file. Three forms exist:
+/// `bytes=0-499` (a span), `bytes=500-` (from there to the end) and
+/// `bytes=-500` (the last 500 bytes).
+///
+/// A header that cannot be understood is ignored, since sending the whole
+/// file is always an acceptable answer to a range request.
+pub fn parse_range(header: &str, length: u64) -> ByteRange {
+    let Some(spec) = header.strip_prefix("bytes=") else {
+        return ByteRange::Whole;
+    };
+    // Several ranges at once need a multipart reply. Not supported.
+    let Some((first, last)) = spec.split_once('-').filter(|_| !spec.contains(',')) else {
+        return ByteRange::Whole;
+    };
+    let (first, last) = (first.trim(), last.trim());
+    let number = |text: &str| text.parse::<u64>().ok();
+    match (first.is_empty(), last.is_empty()) {
+        (true, false) => match number(last) {
+            Some(count) if count == 0 || length == 0 => ByteRange::Unsatisfiable,
+            Some(count) => ByteRange::Part {
+                first: length.saturating_sub(count),
+                last: length - 1,
+            },
+            None => ByteRange::Whole,
+        },
+        (false, true) => match number(first) {
+            Some(first) if first < length => ByteRange::Part {
+                first,
+                last: length - 1,
+            },
+            Some(_) => ByteRange::Unsatisfiable,
+            None => ByteRange::Whole,
+        },
+        (false, false) => match (number(first), number(last)) {
+            (Some(first), Some(last)) if first > last => ByteRange::Whole,
+            // A span that runs past the end is cut short, not refused.
+            (Some(first), Some(last)) if first < length => ByteRange::Part {
+                first,
+                last: last.min(length - 1),
+            },
+            (Some(_), Some(_)) => ByteRange::Unsatisfiable,
+            _ => ByteRange::Whole,
+        },
+        (true, true) => ByteRange::Whole,
+    }
 }
 
 /// Build a page linking to everything in a directory.
