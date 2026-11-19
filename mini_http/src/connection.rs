@@ -4,7 +4,7 @@ use std::time::SystemTime;
 use crate::error::HttpResult;
 use crate::method::Method;
 use crate::reader::{Limits, read_body, read_head};
-use crate::request::{Request, Version};
+use crate::request::{Framing, Request, Version};
 use crate::response::{Response, WriteOptions, write_response};
 use crate::service::Service;
 use crate::stream::Buffered;
@@ -24,7 +24,7 @@ pub fn serve_connection<R: Read, W: Write>(
     let mut stream = Buffered::new(input);
     let mut served = 0;
     while served < limits.max_requests {
-        let request = match next_request(&mut stream, limits) {
+        let request = match next_request(&mut stream, output, limits) {
             Ok(request) => request,
             Err(error) => {
                 // A client that simply went away is owed nothing. One that
@@ -63,9 +63,24 @@ fn closing() -> WriteOptions {
     }
 }
 
-fn next_request<R: Read>(stream: &mut Buffered<R>, limits: &Limits) -> HttpResult<Request> {
+fn next_request<R: Read, W: Write>(
+    stream: &mut Buffered<R>,
+    output: &mut W,
+    limits: &Limits,
+) -> HttpResult<Request> {
     let head = read_head(stream, limits)?;
-    let body = read_body(stream, head.framing()?, limits)?;
+    let framing = head.framing()?;
+    // A client with a large body to send may ask first whether it is wanted,
+    // with `Expect: 100-continue`, and wait for a go-ahead. Answering only
+    // when the body is acceptable means a refused upload never has to cross
+    // the network at all.
+    let acceptable = !matches!(framing, Framing::Length(length) if length > limits.max_body);
+    let asked = head.version == Version::Http11 && head.headers.has_token("Expect", "100-continue");
+    if asked && acceptable && framing != Framing::None {
+        output.write_all(b"HTTP/1.1 100 Continue\r\n\r\n")?;
+        output.flush()?;
+    }
+    let body = read_body(stream, framing, limits)?;
     Ok(Request::new(head, body))
 }
 
@@ -215,5 +230,37 @@ mod tests {
     fn a_client_that_just_leaves_is_sent_nothing() {
         let (served, output) = exchange("", &echo_path, &Limits::default());
         assert_eq!((served, output.as_str()), (0, ""));
+    }
+
+    #[test]
+    fn a_client_that_asks_first_is_told_to_go_ahead() {
+        let input = "POST /upload HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 4\r\n\r\ndata";
+        let (served, output) = exchange(input, &echo_path, &Limits::default());
+        assert_eq!(served, 1);
+        // The interim response comes first, then the real one.
+        assert!(output.starts_with("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\n"));
+    }
+
+    #[test]
+    fn an_unwanted_upload_is_refused_instead_of_invited() {
+        let limits = Limits {
+            max_body: 8,
+            ..Limits::default()
+        };
+        let input = "POST /upload HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 5000\r\n\r\n";
+        let (_, output) = exchange(input, &echo_path, &limits);
+        assert!(output.starts_with("HTTP/1.1 413 Content Too Large\r\n"));
+        assert!(!output.contains("100 Continue"));
+    }
+
+    #[test]
+    fn nobody_is_told_to_continue_without_asking_or_without_a_body() {
+        let plain = "POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\ndata";
+        let (_, output) = exchange(plain, &echo_path, &Limits::default());
+        assert!(output.starts_with("HTTP/1.1 200 OK"));
+
+        let no_body = "GET / HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n\r\n";
+        let (_, output) = exchange(no_body, &echo_path, &Limits::default());
+        assert!(output.starts_with("HTTP/1.1 200 OK"));
     }
 }
