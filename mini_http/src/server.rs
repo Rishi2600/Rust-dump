@@ -2,6 +2,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use crate::connection::serve_connection;
 use crate::error::HttpResult;
@@ -15,6 +16,9 @@ pub struct ServerConfig {
     /// Worker threads, which is also how many connections are served at once.
     pub threads: usize,
     pub limits: Limits,
+    /// How long a connection may stay silent, or refuse to take data, before
+    /// it is closed.
+    pub timeout: Duration,
 }
 
 impl Default for ServerConfig {
@@ -22,6 +26,7 @@ impl Default for ServerConfig {
         Self {
             threads: 8,
             limits: Limits::default(),
+            timeout: Duration::from_secs(10),
         }
     }
 }
@@ -96,6 +101,12 @@ fn handle_connection(stream: TcpStream, service: &dyn Service, config: &ServerCo
     // Send each response as soon as it is written, instead of letting the
     // kernel hold small writes back in the hope of batching them.
     let _ = stream.set_nodelay(true);
+    // A worker waits on one connection at a time. Without a deadline, a
+    // client could occupy it forever by connecting and saying nothing, or by
+    // sending a request one byte a minute, and a handful of such clients
+    // would use up the whole pool.
+    let _ = stream.set_read_timeout(Some(config.timeout));
+    let _ = stream.set_write_timeout(Some(config.timeout));
     // One socket, two handles: reading and writing happen through separate
     // values, so the connection code can own one and borrow the other.
     let Ok(mut writer) = stream.try_clone() else {

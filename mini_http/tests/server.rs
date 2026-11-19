@@ -16,6 +16,17 @@ fn start(service: impl Service + 'static) -> ServerHandle {
     server.spawn().unwrap()
 }
 
+fn start_impatient(service: impl Service + 'static) -> ServerHandle {
+    let config = ServerConfig {
+        timeout: Duration::from_millis(200),
+        ..ServerConfig::default()
+    };
+    Server::bind("127.0.0.1:0", service, config)
+        .unwrap()
+        .spawn()
+        .unwrap()
+}
+
 fn echo_path(request: &Request) -> Response {
     Response::text(StatusCode::OK, format!("path={}", request.path()))
 }
@@ -109,4 +120,44 @@ fn after_shutdown_the_port_no_longer_answers() {
     assert!(roundtrip(address, "GET / HTTP/1.1\r\nHost: x\r\n\r\n").contains("200 OK"));
     server.shutdown();
     assert!(TcpStream::connect(address).is_err());
+}
+
+/// Send `raw` but keep the connection open, then read what the server does.
+fn send_and_wait(address: SocketAddr, raw: &str) -> String {
+    let mut stream = TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream.write_all(raw.as_bytes()).unwrap();
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply).unwrap();
+    reply
+}
+
+#[test]
+fn an_idle_connection_is_closed_without_a_word() {
+    let server = start_impatient(echo_path);
+    let started = Instant::now();
+    assert_eq!(send_and_wait(server.address(), ""), "");
+    assert!(started.elapsed() >= Duration::from_millis(150));
+}
+
+#[test]
+fn a_kept_alive_connection_is_closed_once_it_goes_quiet() {
+    let server = start_impatient(echo_path);
+    // One complete request, then nothing more, without closing our side.
+    let reply = send_and_wait(server.address(), "GET /only HTTP/1.1\r\nHost: x\r\n\r\n");
+    assert_eq!(reply.matches("HTTP/1.1 ").count(), 1);
+    assert!(reply.ends_with("path=/only"));
+}
+
+#[test]
+fn a_request_that_stalls_half_way_gets_a_408() {
+    let server = start_impatient(echo_path);
+    let reply = send_and_wait(
+        server.address(),
+        "GET /slow HTTP/1.1\r\nHost: x\r\nX-Unfinished",
+    );
+    assert!(reply.starts_with("HTTP/1.1 408 Request Timeout\r\n"));
+    assert!(reply.contains("Connection: close"));
 }

@@ -31,12 +31,18 @@ const MAX_LEADING_BLANK_LINES: usize = 4;
 /// Read one request head from the stream: everything up to the empty line.
 pub fn read_head<R: Read>(stream: &mut Buffered<R>, limits: &Limits) -> HttpResult<Head> {
     for _ in 0..=MAX_LEADING_BLANK_LINES {
-        let raw = stream
-            .read_until(b"\r\n\r\n", limits.max_head)
-            .map_err(|error| match error {
-                HttpError::LimitExceeded => HttpError::HeadersTooLarge,
-                other => other,
-            })?;
+        let raw = match stream.read_until(b"\r\n\r\n", limits.max_head) {
+            Ok(raw) => raw,
+            Err(HttpError::LimitExceeded) => return Err(HttpError::HeadersTooLarge),
+            // Silence means two different things. Between requests it is
+            // just a kept-alive connection going unused, which is closed
+            // without comment. Part-way through a request it is a client
+            // too slow to wait for, which is told so.
+            Err(HttpError::Timeout) if stream.buffered().is_empty() => {
+                return Err(HttpError::Closed);
+            }
+            Err(other) => return Err(other),
+        };
         let text = std::str::from_utf8(&raw)
             .map_err(|_| HttpError::BadRequest("the request head is not valid UTF-8".into()))?;
         // Some clients send a stray line break after a request body. The
@@ -305,5 +311,45 @@ mod tests {
         assert_eq!(request.query("q"), Some("a b"));
         assert_eq!(request.header("accept"), Some("*/*"));
         assert_eq!(request.header("missing"), None);
+    }
+
+    /// Delivers its data, then behaves like a socket whose read timed out.
+    struct Stalls(Vec<u8>);
+
+    impl Read for Stalls {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.0.is_empty() {
+                return Err(std::io::ErrorKind::TimedOut.into());
+            }
+            let count = self.0.len().min(buf.len());
+            buf[..count].copy_from_slice(&self.0[..count]);
+            self.0.drain(..count);
+            Ok(count)
+        }
+    }
+
+    #[test]
+    fn silence_between_requests_is_an_idle_connection() {
+        let mut idle = Buffered::new(Stalls(Vec::new()));
+        assert_eq!(
+            read_head(&mut idle, &Limits::default()),
+            Err(HttpError::Closed)
+        );
+    }
+
+    #[test]
+    fn silence_in_the_middle_of_a_request_is_a_timeout() {
+        let mut slow = Buffered::new(Stalls(b"GET / HTTP/1.1\r\nHost: x".to_vec()));
+        assert_eq!(
+            read_head(&mut slow, &Limits::default()),
+            Err(HttpError::Timeout)
+        );
+        // The same goes for a body that stops arriving.
+        let partial = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\nabc".to_vec();
+        let mut slow = Buffered::new(Stalls(partial));
+        assert_eq!(
+            read_request(&mut slow, &Limits::default()),
+            Err(HttpError::Timeout)
+        );
     }
 }
