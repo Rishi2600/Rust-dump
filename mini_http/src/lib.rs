@@ -6,6 +6,7 @@ pub mod error;
 pub mod headers;
 pub mod method;
 pub mod percent;
+pub mod pool;
 pub mod reader;
 pub mod request;
 pub mod response;
