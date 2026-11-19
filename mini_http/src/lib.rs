@@ -5,6 +5,7 @@ pub mod date;
 pub mod error;
 pub mod files;
 pub mod headers;
+pub mod log;
 pub mod method;
 pub mod mime;
 pub mod percent;
