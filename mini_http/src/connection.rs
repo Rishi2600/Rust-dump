@@ -1,4 +1,5 @@
 use std::io::{Read, Write};
+use std::panic::{self, AssertUnwindSafe};
 use std::time::SystemTime;
 
 use crate::error::HttpResult;
@@ -7,6 +8,7 @@ use crate::reader::{Limits, read_body, read_head};
 use crate::request::{Framing, Request, Version};
 use crate::response::{Response, WriteOptions, write_response};
 use crate::service::Service;
+use crate::status::StatusCode;
 use crate::stream::Buffered;
 
 /// Serve requests arriving on `input`, writing responses to `output`, until
@@ -38,7 +40,12 @@ pub fn serve_connection<R: Read, W: Write>(
             }
         };
         served += 1;
-        let response = service.call(&request);
+        // A bug in one handler must not take the connection down with it, or
+        // the worker thread that happens to be running it. The panic is
+        // caught here and reported to the client as a server error.
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| service.call(&request)));
+        let response =
+            outcome.unwrap_or_else(|_| Response::error(StatusCode::INTERNAL_SERVER_ERROR));
         let options = WriteOptions {
             version: request.version,
             head_only: request.method == Method::Head,
@@ -87,8 +94,6 @@ fn next_request<R: Read, W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use crate::status::StatusCode;
 
     fn echo_path(request: &Request) -> Response {
         Response::text(StatusCode::OK, format!("path={}", request.path()))
@@ -262,5 +267,20 @@ mod tests {
         let no_body = "GET / HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n\r\n";
         let (_, output) = exchange(no_body, &echo_path, &Limits::default());
         assert!(output.starts_with("HTTP/1.1 200 OK"));
+    }
+
+    #[test]
+    fn a_panicking_handler_becomes_a_500_and_the_connection_survives() {
+        let fragile = |request: &Request| {
+            if request.path() == "/boom" {
+                panic!("handler bug (this panic is expected by the test)");
+            }
+            echo_path(request)
+        };
+        let input = "GET /boom HTTP/1.1\r\nHost: x\r\n\r\nGET /fine HTTP/1.1\r\nHost: x\r\n\r\n";
+        let (served, output) = exchange(input, &fragile, &Limits::default());
+        assert_eq!(served, 2);
+        assert!(output.starts_with("HTTP/1.1 500 Internal Server Error\r\n"));
+        assert!(output.contains("HTTP/1.1 200 OK") && output.ends_with("path=/fine"));
     }
 }
