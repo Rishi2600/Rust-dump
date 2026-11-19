@@ -120,6 +120,53 @@ impl Head {
     }
 }
 
+/// A complete request: the head, and the body that followed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Request {
+    pub method: Method,
+    pub target: Target,
+    pub version: Version,
+    pub headers: Headers,
+    pub body: Vec<u8>,
+}
+
+impl Request {
+    pub fn new(head: Head, body: Vec<u8>) -> Self {
+        Self {
+            method: head.method,
+            target: head.target,
+            version: head.version,
+            headers: head.headers,
+            body,
+        }
+    }
+
+    pub fn path(&self) -> &str {
+        &self.target.path
+    }
+
+    /// The first value of a query string parameter.
+    pub fn query(&self, name: &str) -> Option<&str> {
+        self.target.query_value(name)
+    }
+
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(name)
+    }
+
+    /// Whether the client wants to send more requests on this connection.
+    ///
+    /// HTTP/1.1 keeps connections open unless told otherwise, because
+    /// opening one is slow. HTTP/1.0 closed after every response unless the
+    /// client asked to keep it.
+    pub fn keep_alive(&self) -> bool {
+        match self.version {
+            Version::Http11 => !self.headers.has_token("Connection", "close"),
+            Version::Http10 => self.headers.has_token("Connection", "keep-alive"),
+        }
+    }
+}
+
 /// How a message says where its body ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Framing {
