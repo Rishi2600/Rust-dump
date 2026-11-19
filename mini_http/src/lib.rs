@@ -11,6 +11,7 @@ pub mod reader;
 pub mod request;
 pub mod response;
 pub mod router;
+pub mod server;
 pub mod service;
 pub mod status;
 pub mod stream;
