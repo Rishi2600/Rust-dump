@@ -294,6 +294,26 @@ impl Mempool {
     }
 }
 
+impl Mempool {
+    /// The transactions that could run right now: for each sender, the one
+    /// whose nonce is exactly the next the ledger expects.
+    ///
+    /// Everything else in the pool is waiting on one of these.
+    pub fn ready(&self, ledger: &Ledger) -> Vec<&Pending> {
+        let heads = self
+            .by_sender
+            .iter()
+            .filter_map(|(sender, queue)| queue.get(&ledger.nonce(sender)));
+        heads.collect()
+    }
+
+    /// The transaction that becomes runnable once this sender's `nonce` has
+    /// been used.
+    pub fn next_after(&self, sender: &str, nonce: u64) -> Option<&Pending> {
+        self.get(sender, nonce.checked_add(1)?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -662,5 +682,49 @@ mod tests {
             .unwrap();
         assert!(pool.expire(3).is_empty());
         assert_eq!(ids(&pool.expire(5)), [2]);
+    }
+
+    fn ready_ids(pool: &Mempool, ledger: &Ledger) -> Vec<u64> {
+        pool.ready(ledger)
+            .iter()
+            .map(|pending| pending.tx.id)
+            .collect()
+    }
+
+    #[test]
+    fn only_the_first_of_each_senders_queue_is_ready() {
+        let (mut pool, ledger) = (pool(), funded());
+        pool.add(tx(1, "alice", 0), &ledger, 0).unwrap();
+        pool.add(tx(2, "alice", 1), &ledger, 0).unwrap();
+        pool.add(tx(3, "bob", 0), &ledger, 0).unwrap();
+        assert_eq!(ready_ids(&pool, &ledger), [1, 3]);
+        // What comes after each of them is found by nonce.
+        assert_eq!(
+            pool.next_after("alice", 0).map(|pending| pending.tx.id),
+            Some(2)
+        );
+        assert!(pool.next_after("alice", 1).is_none());
+        assert!(pool.next_after("bob", u64::MAX).is_none());
+    }
+
+    #[test]
+    fn a_queue_with_a_gap_at_the_front_has_nothing_ready() {
+        let (mut pool, ledger) = (pool(), funded());
+        // Nonce 0 has not arrived, so nonce 1 cannot run yet.
+        pool.add(tx(1, "alice", 1), &ledger, 0).unwrap();
+        assert!(ready_ids(&pool, &ledger).is_empty());
+        pool.add(tx(2, "alice", 0), &ledger, 0).unwrap();
+        assert_eq!(ready_ids(&pool, &ledger), [2]);
+    }
+
+    #[test]
+    fn readiness_follows_the_ledgers_nonce() {
+        let (mut pool, mut ledger) = (pool(), funded());
+        pool.add(tx(1, "alice", 0), &ledger, 0).unwrap();
+        pool.add(tx(2, "alice", 1), &ledger, 0).unwrap();
+        // Once nonce 0 has been applied and taken out, nonce 1 is next.
+        pool.remove("alice", 0);
+        ledger.bump_nonce("alice");
+        assert_eq!(ready_ids(&pool, &ledger), [2]);
     }
 }
