@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::thread;
 
 use crate::ledger::Ledger;
 use crate::tx::Transaction;
@@ -127,6 +128,55 @@ pub fn execute_serial(ledger: &mut Ledger, txs: &[Transaction]) -> Vec<Receipt> 
         receipts.push(effect.receipt);
     }
     receipts
+}
+
+/// Run a block's batches: the batches one after another, the transactions
+/// inside each batch at the same time.
+///
+/// For every batch, each transaction's effect is worked out against the
+/// ledger as it stood when the batch began, on up to `threads` threads.
+/// Only then are the effects written, one by one. That is sound because the
+/// planner guarantees no two transactions in a batch touch the same account
+/// unless both only read it. None of them could have seen another's change,
+/// and no two of them write the same balance.
+pub fn execute_batches(
+    ledger: &mut Ledger,
+    batches: &[Vec<Transaction>],
+    threads: usize,
+) -> Vec<Receipt> {
+    let mut receipts = Vec::new();
+    for batch in batches {
+        let effects = run_together(batch, ledger, threads);
+        for effect in &effects {
+            apply(ledger, effect);
+        }
+        receipts.extend(effects.into_iter().map(|effect| effect.receipt));
+    }
+    receipts
+}
+
+/// Work out the effects of a batch on several threads. The result is in the
+/// same order as the batch, whichever thread finished first.
+fn run_together(batch: &[Transaction], ledger: &Ledger, threads: usize) -> Vec<Effect> {
+    let workers = threads.clamp(1, batch.len().max(1));
+    if workers == 1 {
+        return batch.iter().map(|tx| run(tx, ledger)).collect();
+    }
+    let share = batch.len().div_ceil(workers);
+    // Scoped threads may borrow the batch and the ledger, because the scope
+    // does not end until every one of them has finished.
+    thread::scope(|scope| {
+        let running: Vec<_> = batch
+            .chunks(share)
+            .map(|txs| {
+                scope.spawn(move || txs.iter().map(|tx| run(tx, ledger)).collect::<Vec<_>>())
+            })
+            .collect();
+        let finished = running
+            .into_iter()
+            .map(|worker| worker.join().expect("a worker thread panicked"));
+        finished.flatten().collect()
+    })
 }
 
 #[cfg(test)]
@@ -318,6 +368,69 @@ mod tests {
         let mut ledger = ledger();
         let out_of_turn = Transaction::new(1, "alice", 7).pay("bob", 100).with_fee(10);
         execute_serial(&mut ledger, &[out_of_turn]);
+        assert_eq!(ledger, self::ledger());
+    }
+
+    /// Sixteen senders, each paying a payee nobody else touches.
+    fn independent() -> (Ledger, Vec<Transaction>) {
+        let names: Vec<String> = (0..16).map(|index| format!("sender{index}")).collect();
+        let ledger = Ledger::with_balances(names.iter().map(|name| (name.as_str(), 1000)));
+        let txs = names.iter().enumerate().map(|(index, name)| {
+            Transaction::new(index as u64, name, 0)
+                .pay(&format!("payee{index}"), 10 + index as u64)
+                .with_fee(1)
+        });
+        (ledger, txs.collect())
+    }
+
+    #[test]
+    fn a_batch_run_together_matches_running_it_one_by_one() {
+        let (start, txs) = independent();
+        let mut serial = start.clone();
+        let expected = execute_serial(&mut serial, &txs);
+        for threads in [1, 2, 4, 16, 64] {
+            let mut parallel = start.clone();
+            let receipts = execute_batches(&mut parallel, &[txs.clone()], threads);
+            assert_eq!(parallel, serial, "{threads} threads");
+            assert_eq!(receipts, expected, "{threads} threads");
+        }
+    }
+
+    #[test]
+    fn the_order_of_writing_within_a_batch_does_not_matter() {
+        let (start, txs) = independent();
+        let effects: Vec<Effect> = txs.iter().map(|tx| run(tx, &start)).collect();
+        let (mut forwards, mut backwards) = (start.clone(), start.clone());
+        effects
+            .iter()
+            .for_each(|effect| apply(&mut forwards, effect));
+        effects
+            .iter()
+            .rev()
+            .for_each(|effect| apply(&mut backwards, effect));
+        assert_eq!(forwards, backwards);
+    }
+
+    #[test]
+    fn batches_run_in_order_so_a_later_one_sees_the_earlier_ones_result() {
+        let mut ledger = ledger();
+        let first = vec![Transaction::new(1, "alice", 0).pay("bob", 500).with_fee(1)];
+        // Bob can only afford this after the first batch has paid him.
+        let second = vec![Transaction::new(2, "bob", 0).pay("carol", 400).with_fee(1)];
+        let receipts = execute_batches(&mut ledger, &[first, second], 4);
+        assert!(
+            receipts
+                .iter()
+                .all(|receipt| receipt.status == Status::Success)
+        );
+        assert_eq!(ledger.balance("carol"), 400);
+    }
+
+    #[test]
+    fn nothing_to_run_is_not_a_problem() {
+        let mut ledger = ledger();
+        assert!(execute_batches(&mut ledger, &[], 4).is_empty());
+        assert!(execute_batches(&mut ledger, &[Vec::new()], 0).is_empty());
         assert_eq!(ledger, self::ledger());
     }
 }
