@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::tx::Transaction;
 
 /// Whether two transactions must not run at the same time.
@@ -19,6 +21,85 @@ pub fn conflicts(first: &Transaction, second: &Transaction) -> bool {
     let first_writes_what_second_reads = first_writes.intersection(&second_reads).next().is_some();
     let second_writes_what_first_reads = second_writes.intersection(&first_reads).next().is_some();
     both_write || first_writes_what_second_reads || second_writes_what_first_reads
+}
+
+/// Sorts transactions into batches that can each run in parallel.
+///
+/// Transactions are handed over one at a time, most important first. Each is
+/// put in the earliest batch that comes after every earlier transaction it
+/// clashes with:
+///
+/// ```text
+/// batch 0     batch 1     batch 2
+/// A  a->b     C  b->e     E  e->a
+/// B  c->d
+/// D  f->g
+/// ```
+///
+/// C clashes with A (both touch `b`), so it waits for the next batch. E
+/// clashes with C and with A, so it waits for the one after that. B and D
+/// touch nothing the others do and run alongside A.
+///
+/// Two properties follow. Inside a batch nothing clashes, so the order of
+/// execution within it does not matter. And of any two transactions that do
+/// clash, the one handed over first is in the earlier batch, so the order
+/// that priority decided is the order in which they take effect.
+#[derive(Debug, Clone, Default)]
+pub struct BatchPlanner {
+    /// The latest batch that writes each account.
+    last_write: HashMap<String, usize>,
+    /// The latest batch that reads each account.
+    last_read: HashMap<String, usize>,
+    /// How many transactions each batch holds so far.
+    widths: Vec<usize>,
+}
+
+impl BatchPlanner {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// How many batches have been started.
+    pub fn batch_count(&self) -> usize {
+        self.widths.len()
+    }
+
+    /// How many transactions are in `batch`.
+    pub fn width(&self, batch: usize) -> usize {
+        self.widths.get(batch).copied().unwrap_or(0)
+    }
+
+    /// Choose the batch for `tx` and record that it is there.
+    pub fn place(&mut self, tx: &Transaction) -> usize {
+        let (writes, reads) = (tx.writes(), tx.read_only());
+        let mut batch = 0;
+        for account in &writes {
+            // A writer waits for everyone who touched the account before it.
+            let earlier = [self.last_write.get(*account), self.last_read.get(*account)];
+            for used in earlier.into_iter().flatten() {
+                batch = batch.max(used + 1);
+            }
+        }
+        for account in &reads {
+            // A reader waits only for writers. Other readers are company.
+            if let Some(written) = self.last_write.get(*account) {
+                batch = batch.max(written + 1);
+            }
+        }
+
+        for account in writes {
+            self.last_write.insert(account.to_string(), batch);
+        }
+        for account in reads {
+            let latest = self.last_read.entry(account.to_string()).or_insert(batch);
+            *latest = (*latest).max(batch);
+        }
+        if self.widths.len() <= batch {
+            self.widths.resize(batch + 1, 0);
+        }
+        self.widths[batch] += 1;
+        batch
+    }
 }
 
 #[cfg(test)]
@@ -75,5 +156,85 @@ mod tests {
     fn a_transaction_clashes_with_itself() {
         let tx = payment(1, "alice", "bob");
         assert!(conflicts(&tx, &tx));
+    }
+
+    fn batches_for(txs: &[Transaction]) -> Vec<usize> {
+        let mut planner = BatchPlanner::new();
+        txs.iter().map(|tx| planner.place(tx)).collect()
+    }
+
+    #[test]
+    fn unrelated_transactions_all_share_the_first_batch() {
+        let txs = [
+            payment(1, "alice", "bob"),
+            payment(2, "carol", "dave"),
+            payment(3, "erin", "frank"),
+        ];
+        assert_eq!(batches_for(&txs), [0, 0, 0]);
+    }
+
+    #[test]
+    fn a_chain_of_clashes_becomes_a_chain_of_batches() {
+        // Each one's payee is the next one's sender.
+        let txs = [
+            payment(1, "alice", "bob"),
+            payment(2, "bob", "carol"),
+            payment(3, "carol", "dave"),
+        ];
+        assert_eq!(batches_for(&txs), [0, 1, 2]);
+    }
+
+    #[test]
+    fn the_example_from_the_documentation() {
+        let txs = [
+            payment(1, "a", "b"),
+            payment(2, "c", "d"),
+            payment(3, "b", "e"),
+            payment(4, "f", "g"),
+            payment(5, "e", "a"),
+        ];
+        let mut planner = BatchPlanner::new();
+        let placed: Vec<usize> = txs.iter().map(|tx| planner.place(tx)).collect();
+        assert_eq!(placed, [0, 0, 1, 0, 2]);
+        assert_eq!(planner.batch_count(), 3);
+        assert_eq!(
+            (planner.width(0), planner.width(1), planner.width(2)),
+            (3, 1, 1)
+        );
+        assert_eq!(planner.width(9), 0);
+    }
+
+    #[test]
+    fn readers_share_a_batch_but_take_turns_with_writers() {
+        let read_a = payment(1, "alice", "bob").reading("oracle");
+        let read_b = payment(2, "carol", "dave").reading("oracle");
+        let write = payment(3, "erin", "oracle");
+        let read_c = payment(4, "frank", "gina").reading("oracle");
+        // Two readers together, the writer after both, a third reader after
+        // the writer so that it sees what was written.
+        assert_eq!(batches_for(&[read_a, read_b, write, read_c]), [0, 0, 1, 2]);
+    }
+
+    #[test]
+    fn no_batch_ever_holds_two_transactions_that_clash() {
+        let txs = [
+            payment(1, "a", "b"),
+            payment(2, "b", "c").reading("a"),
+            payment(3, "d", "e").reading("c"),
+            payment(4, "e", "a"),
+            payment(5, "f", "g").reading("a"),
+            payment(6, "g", "f"),
+        ];
+        let placed = batches_for(&txs);
+        for first in 0..txs.len() {
+            for second in first + 1..txs.len() {
+                if conflicts(&txs[first], &txs[second]) {
+                    assert!(
+                        placed[first] < placed[second],
+                        "{first} and {second}: {placed:?}"
+                    );
+                }
+            }
+        }
     }
 }
