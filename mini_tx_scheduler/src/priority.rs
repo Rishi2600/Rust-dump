@@ -1,4 +1,9 @@
 use std::cmp::Ordering;
+use std::fmt;
+use std::str::FromStr;
+
+use crate::error::SchedError;
+use crate::tx::Transaction;
 
 /// How urgently a transaction should run. A larger priority goes first.
 ///
@@ -61,6 +66,58 @@ impl PartialEq for Priority {
 
 impl Eq for Priority {}
 
+/// The rule that decides which waiting transaction goes first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Policy {
+    /// Highest fee per compute unit first. The default, and the rule this
+    /// project is about.
+    FeePerUnit,
+    /// Highest total fee first, whatever the size.
+    TotalFee,
+    /// First come, first served. Fees are ignored. Here as a baseline to
+    /// measure the others against.
+    Fifo,
+}
+
+impl Policy {
+    pub const ALL: [Policy; 3] = [Policy::FeePerUnit, Policy::TotalFee, Policy::Fifo];
+
+    /// The priority this rule gives a transaction that arrived as number
+    /// `arrival`. Every rule falls back on arrival order to break ties.
+    pub fn key(self, tx: &Transaction, arrival: u64) -> Priority {
+        match self {
+            Policy::FeePerUnit => Priority::new(tx.fee, tx.units, arrival),
+            // A rate "per one unit" is just the fee.
+            Policy::TotalFee => Priority::new(tx.fee, 1, arrival),
+            // Everyone has the same rate, so only arrival order is left.
+            Policy::Fifo => Priority::new(0, 1, arrival),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Policy::FeePerUnit => "fee-per-unit",
+            Policy::TotalFee => "total-fee",
+            Policy::Fifo => "fifo",
+        }
+    }
+}
+
+impl fmt::Display for Policy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl FromStr for Policy {
+    type Err = SchedError;
+
+    fn from_str(text: &str) -> Result<Self, SchedError> {
+        let found = Self::ALL.into_iter().find(|policy| policy.name() == text);
+        found.ok_or_else(|| SchedError::Invalid(format!("`{text}` is not a policy")))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +158,52 @@ mod tests {
         let odd = Priority::new(5, 0, 0);
         assert_eq!(odd.rate(), 5.0);
         assert!(odd > Priority::new(4, 1, 0));
+    }
+
+    fn tx(id: u64, fee: u64, units: u64) -> Transaction {
+        Transaction::new(id, "alice", 0)
+            .pay("bob", 1)
+            .with_fee(fee)
+            .with_units(units)
+    }
+
+    /// The ids of `txs` from first to run to last, under `policy`. Arrival
+    /// order is the order of the slice.
+    fn ranked(policy: Policy, txs: &[Transaction]) -> Vec<u64> {
+        let mut keyed: Vec<(Priority, u64)> = txs
+            .iter()
+            .enumerate()
+            .map(|(arrival, tx)| (policy.key(tx, arrival as u64), tx.id))
+            .collect();
+        keyed.sort_by(|a, b| b.0.cmp(&a.0));
+        keyed.into_iter().map(|(_, id)| id).collect()
+    }
+
+    #[test]
+    fn each_policy_orders_the_same_transactions_differently() {
+        // id 1: fee 50 for 100 units (0.5/unit), arrived first
+        // id 2: fee 90 for 900 units (0.1/unit)
+        // id 3: fee 40 for 20 units  (2.0/unit), arrived last
+        let txs = [tx(1, 50, 100), tx(2, 90, 900), tx(3, 40, 20)];
+        assert_eq!(ranked(Policy::FeePerUnit, &txs), [3, 1, 2]);
+        assert_eq!(ranked(Policy::TotalFee, &txs), [2, 1, 3]);
+        assert_eq!(ranked(Policy::Fifo, &txs), [1, 2, 3]);
+    }
+
+    #[test]
+    fn every_policy_breaks_ties_by_arrival() {
+        let txs = [tx(1, 10, 100), tx(2, 10, 100), tx(3, 10, 100)];
+        for policy in Policy::ALL {
+            assert_eq!(ranked(policy, &txs), [1, 2, 3], "{policy}");
+        }
+    }
+
+    #[test]
+    fn policies_have_names() {
+        for policy in Policy::ALL {
+            assert_eq!(policy.to_string().parse(), Ok(policy));
+        }
+        assert_eq!("fee-per-unit".parse(), Ok(Policy::FeePerUnit));
+        assert!("highest-bidder".parse::<Policy>().is_err());
     }
 }
