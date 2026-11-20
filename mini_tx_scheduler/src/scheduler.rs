@@ -10,11 +10,20 @@ use crate::tx::Transaction;
 pub struct BlockLimits {
     /// How many transactions can run at the same time.
     pub threads: usize,
+    /// The compute units a block may add up to. This is what makes block
+    /// space scarce, and so what makes fees mean anything.
+    pub max_units: u64,
+    /// The most transactions a block may hold.
+    pub max_transactions: usize,
 }
 
 impl Default for BlockLimits {
     fn default() -> Self {
-        Self { threads: 4 }
+        Self {
+            threads: 4,
+            max_units: 10_000,
+            max_transactions: 1_000,
+        }
     }
 }
 
@@ -114,6 +123,16 @@ pub fn build_schedule(
             continue;
         };
         let tx = &pending.tx;
+        if schedule.picks.len() >= limits.max_transactions {
+            break;
+        }
+        // A transaction too big for the room that is left is passed over.
+        // So is the rest of its sender's queue, which could only run after
+        // it. Smaller transactions further down may still fit, so the
+        // search goes on.
+        if tx.units > limits.max_units.saturating_sub(schedule.units) {
+            continue;
+        }
         let batch = planner.place(tx);
         schedule.units += tx.units;
         schedule.picks.push(Pick {
@@ -245,5 +264,62 @@ mod tests {
             tx(2, "bob", 0, "yan", 1),
         ]);
         assert_eq!(schedule(&pool, Policy::FeePerUnit).ids(), [2]);
+    }
+
+    fn limited(pool: &Mempool, max_units: u64, max_transactions: usize) -> Schedule {
+        let limits = BlockLimits {
+            max_units,
+            max_transactions,
+            ..BlockLimits::default()
+        };
+        build_schedule(pool, &ledger(), Policy::FeePerUnit, &limits)
+    }
+
+    #[test]
+    fn a_block_stops_filling_when_its_compute_budget_is_spent() {
+        let pool = pool_of(vec![
+            tx(1, "alice", 0, "zed", 400).with_units(400),
+            tx(2, "bob", 0, "yan", 270).with_units(300),
+            tx(3, "carol", 0, "xia", 240).with_units(300),
+        ]);
+        // Rates are 1.0, 0.9 and 0.8. The first two use exactly 700 units.
+        let chosen = limited(&pool, 700, 100);
+        assert_eq!((chosen.ids(), chosen.units), (vec![1, 2], 700));
+    }
+
+    #[test]
+    fn a_transaction_too_big_for_the_space_left_does_not_block_smaller_ones() {
+        let pool = pool_of(vec![
+            tx(1, "alice", 0, "zed", 600).with_units(600),
+            // Second best rate, but it no longer fits after the first.
+            tx(2, "bob", 0, "yan", 540).with_units(600),
+            tx(3, "carol", 0, "xia", 50).with_units(100),
+        ]);
+        let chosen = limited(&pool, 700, 100);
+        assert_eq!((chosen.ids(), chosen.units), (vec![1, 3], 700));
+    }
+
+    #[test]
+    fn when_a_transaction_does_not_fit_neither_does_what_is_queued_behind_it() {
+        let pool = pool_of(vec![
+            tx(1, "alice", 0, "zed", 900).with_units(900),
+            // Small enough to fit, but it must come after alice's first.
+            tx(2, "alice", 1, "zed", 50).with_units(10),
+            tx(3, "bob", 0, "yan", 5).with_units(100),
+        ]);
+        let chosen = limited(&pool, 500, 100);
+        assert_eq!(chosen.ids(), [3]);
+    }
+
+    #[test]
+    fn a_block_holds_no_more_than_its_transaction_limit() {
+        let pool = pool_of(vec![
+            tx(1, "alice", 0, "zed", 10),
+            tx(2, "bob", 0, "yan", 30),
+            tx(3, "carol", 0, "xia", 20),
+        ]);
+        assert_eq!(limited(&pool, 10_000, 2).ids(), [2, 3]);
+        assert!(limited(&pool, 10_000, 0).is_empty());
+        assert!(limited(&pool, 0, 100).is_empty());
     }
 }
