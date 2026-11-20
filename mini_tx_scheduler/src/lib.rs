@@ -10,3 +10,4 @@ pub mod node;
 pub mod priority;
 pub mod scheduler;
 pub mod tx;
+pub mod workload;
