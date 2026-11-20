@@ -119,3 +119,50 @@ fn the_pool_judges_new_transactions_by_the_ledger_as_it_now_stands() {
     assert!(node.submit(tx(2, "alice", 0, "dave", 5, 10)).is_err());
     assert!(node.submit(tx(3, "alice", 1, "dave", 5, 10)).is_ok());
 }
+
+#[test]
+fn the_fees_of_a_block_go_to_the_validator() {
+    let mut node = node();
+    node.submit(tx(1, "alice", 0, "dave", 100, 10)).unwrap();
+    node.submit(tx(2, "bob", 0, "erin", 200, 30)).unwrap();
+    // A failed transaction pays its fee like any other.
+    node.submit(tx(3, "carol", 0, "frank", 99_999, 5)).unwrap();
+    let block = node.produce_block();
+    assert_eq!(block.fees, 45);
+    assert_eq!(node.ledger().balance("validator"), 45);
+}
+
+#[test]
+fn no_money_is_created_or_destroyed() {
+    let mut node = node();
+    let before = node.ledger().total();
+    for (index, sender) in ["alice", "bob", "carol"].into_iter().enumerate() {
+        for nonce in 0..4 {
+            let id = (index * 10 + nonce) as u64;
+            // Some of these succeed and some ask for more than there is.
+            let amount = 150 * (nonce as u64 + 1);
+            node.submit(tx(id, sender, nonce as u64, "dave", amount, 7))
+                .unwrap();
+        }
+    }
+    while !node.pool().is_empty() {
+        node.produce_block();
+    }
+    // Every unit that left an account arrived in another: payees for the
+    // transfers, the validator for the fees.
+    assert_eq!(node.ledger().total(), before);
+    assert_eq!(node.ledger().balance("validator"), 12 * 7);
+}
+
+#[test]
+fn the_validator_account_can_be_chosen() {
+    let config = NodeConfig {
+        validator: "treasury".to_string(),
+        ..NodeConfig::default()
+    };
+    let mut node = Node::new(ledger(), config);
+    node.submit(tx(1, "alice", 0, "dave", 1, 9)).unwrap();
+    node.produce_block();
+    assert_eq!(node.ledger().balance("treasury"), 9);
+    assert_eq!(node.ledger().balance("validator"), 0);
+}

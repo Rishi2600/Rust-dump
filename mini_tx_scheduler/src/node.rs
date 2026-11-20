@@ -10,6 +10,8 @@ use crate::tx::Transaction;
 pub struct NodeConfig {
     pub pool: PoolConfig,
     pub limits: BlockLimits,
+    /// The account that receives the fees of every block.
+    pub validator: String,
 }
 
 impl Default for NodeConfig {
@@ -17,6 +19,7 @@ impl Default for NodeConfig {
         Self {
             pool: PoolConfig::default(),
             limits: BlockLimits::default(),
+            validator: "validator".to_string(),
         }
     }
 }
@@ -85,6 +88,11 @@ impl Node {
             self.pool.remove(&pick.tx.sender, pick.tx.nonce);
         }
         let fees = receipts.iter().map(|receipt| receipt.fee).sum();
+        // Fees are paid out once, after the block, in a single credit. If
+        // every transaction paid the validator directly, every transaction
+        // would write the same account, each would clash with all the
+        // others, and nothing could ever run in parallel.
+        let _ = self.ledger.credit(&self.config.validator, fees);
         self.slot += 1;
         Block {
             slot,
