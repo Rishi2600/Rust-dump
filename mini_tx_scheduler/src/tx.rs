@@ -1,3 +1,5 @@
+use crate::error::{SchedError, SchedResult};
+
 /// Compute units a transaction asks for when it does not say.
 pub const DEFAULT_UNITS: u64 = 100;
 /// The most compute units one transaction may ask for.
@@ -80,6 +82,62 @@ impl Transaction {
     }
 }
 
+/// Whether `text` can be an account name: letters, digits, `_` and `-`.
+pub fn is_name(text: &str) -> bool {
+    let allowed = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-';
+    !text.is_empty() && text.len() <= 32 && text.bytes().all(allowed)
+}
+
+impl Transaction {
+    /// Check that the transaction makes sense on its own, before anything is
+    /// known about balances or what else is waiting.
+    ///
+    /// These checks cost almost nothing and need no state, so they come
+    /// first. Every limit here is also a bound on how much work one
+    /// transaction can cause later.
+    pub fn validate(&self) -> SchedResult<()> {
+        let invalid = |reason: String| {
+            Err(SchedError::Invalid(format!(
+                "transaction {}: {reason}",
+                self.id
+            )))
+        };
+        if !is_name(&self.sender) {
+            return invalid(format!("`{}` is not an account name", self.sender));
+        }
+        if self.units == 0 || self.units > MAX_UNITS {
+            return invalid(format!("units must be from 1 to {MAX_UNITS}"));
+        }
+        if self.transfers.is_empty() {
+            return invalid("it transfers nothing".into());
+        }
+        if self.transfers.len() > MAX_TRANSFERS {
+            return invalid(format!("more than {MAX_TRANSFERS} transfers"));
+        }
+        for transfer in &self.transfers {
+            if !is_name(&transfer.to) {
+                return invalid(format!("`{}` is not an account name", transfer.to));
+            }
+            if transfer.to == self.sender {
+                return invalid("it pays its own sender".into());
+            }
+            if transfer.amount == 0 {
+                return invalid("it transfers an amount of zero".into());
+            }
+        }
+        if self.reads.len() > MAX_READS {
+            return invalid(format!("more than {MAX_READS} accounts read"));
+        }
+        if let Some(bad) = self.reads.iter().find(|account| !is_name(account)) {
+            return invalid(format!("`{bad}` is not an account name"));
+        }
+        if self.spend().is_none() {
+            return invalid("its fee and transfers add up to more than can exist".into());
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,5 +180,69 @@ mod tests {
     #[test]
     fn units_default_to_a_modest_amount() {
         assert_eq!(Transaction::new(1, "alice", 0).units, DEFAULT_UNITS);
+    }
+
+    fn invalid(tx: Transaction) -> bool {
+        matches!(tx.validate(), Err(SchedError::Invalid(_)))
+    }
+
+    fn good() -> Transaction {
+        Transaction::new(1, "alice", 0).pay("bob", 10).with_fee(1)
+    }
+
+    #[test]
+    fn a_well_formed_transaction_passes() {
+        assert_eq!(good().validate(), Ok(()));
+        assert_eq!(
+            good().reading("oracle").with_units(MAX_UNITS).validate(),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn malformed_transactions_are_refused_with_a_reason() {
+        assert!(
+            invalid(Transaction::new(1, "alice", 0).with_fee(1)),
+            "transfers nothing"
+        );
+        assert!(invalid(good().with_units(0)));
+        assert!(invalid(good().with_units(MAX_UNITS + 1)));
+        assert!(invalid(good().pay("alice", 5)), "pays itself");
+        assert!(invalid(good().pay("carol", 0)), "zero amount");
+        assert!(invalid(good().pay("carol", u64::MAX)), "overflowing total");
+        assert!(invalid(Transaction::new(1, "", 0).pay("bob", 1)));
+        assert!(invalid(Transaction::new(1, "al ice", 0).pay("bob", 1)));
+        assert!(invalid(good().pay("bo/b", 1)));
+        assert!(invalid(good().reading("not a name")));
+
+        let message = good().with_units(0).validate().unwrap_err().to_string();
+        assert_eq!(
+            message,
+            "invalid: transaction 1: units must be from 1 to 1000000"
+        );
+    }
+
+    #[test]
+    fn the_number_of_accounts_a_transaction_touches_is_bounded() {
+        let mut many_transfers = good();
+        let mut many_reads = good();
+        for index in 0..MAX_TRANSFERS {
+            many_transfers = many_transfers.pay(&format!("payee{index}"), 1);
+            many_reads = many_reads.reading(&format!("feed{index}"));
+        }
+        assert!(invalid(many_transfers));
+        assert_eq!(many_reads.clone().validate(), Ok(()));
+        assert!(invalid(many_reads.reading("one-too-many")));
+    }
+
+    #[test]
+    fn account_names_are_short_plain_words() {
+        for name in ["alice", "pool_7", "fee-vault", "A1"] {
+            assert!(is_name(name), "{name}");
+        }
+        let too_long = "n".repeat(33);
+        for name in ["", "two words", "é", "a.b", too_long.as_str()] {
+            assert!(!is_name(name), "{name:?}");
+        }
     }
 }
