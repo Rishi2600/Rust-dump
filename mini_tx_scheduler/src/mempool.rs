@@ -153,8 +153,38 @@ impl Mempool {
             return Err(SchedError::Duplicate(tx.id));
         }
         self.check_admission(&tx, ledger)?;
+        let replaced = self.replace_existing(&tx)?;
         self.insert(tx, slot);
-        Ok(Admission::default())
+        Ok(Admission {
+            replaced,
+            evicted: None,
+        })
+    }
+
+    /// If the sender already has a transaction waiting with this nonce,
+    /// decide whether the new one may take its place.
+    ///
+    /// Replacing is how a sender raises the fee on a transaction that is
+    /// stuck, or cancels it by sending something else with the same nonce.
+    /// It has to cost noticeably more each time. If it were free, one
+    /// transaction could be swapped back and forth forever, making the pool
+    /// do work for which nobody pays.
+    fn replace_existing(&mut self, tx: &Transaction) -> SchedResult<Option<u64>> {
+        let Some(existing) = self.get(&tx.sender, tx.nonce) else {
+            return Ok(None);
+        };
+        let (old_id, old_fee) = (existing.tx.id, u128::from(existing.tx.fee));
+        // The required increase is rounded up, so even a tiny fee must rise.
+        let bump = (old_fee * u128::from(self.config.replace_bump_percent)).div_ceil(100);
+        let needed = u64::try_from(old_fee + bump).unwrap_or(u64::MAX);
+        if tx.fee < needed {
+            return Err(SchedError::ReplacementUnderpriced {
+                fee: tx.fee,
+                needed,
+            });
+        }
+        self.remove(&tx.sender, tx.nonce);
+        Ok(Some(old_id))
     }
 
     /// The checks that depend on the ledger: is this transaction one that
@@ -363,5 +393,71 @@ mod tests {
             Err(SchedError::Invalid(_))
         ));
         assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn a_better_paying_transaction_replaces_one_with_the_same_nonce() {
+        let mut pool = pool();
+        pool.add(tx(1, "alice", 0).with_fee(100), &funded(), 0)
+            .unwrap();
+        // 10% more is the least that will do.
+        let admission = pool
+            .add(tx(2, "alice", 0).with_fee(110), &funded(), 0)
+            .unwrap();
+        assert_eq!(admission.replaced, Some(1));
+        assert_eq!(pool.len(), 1);
+        assert!(!pool.contains(1));
+        assert_eq!(pool.get("alice", 0).unwrap().tx.fee, 110);
+    }
+
+    #[test]
+    fn a_replacement_that_does_not_pay_enough_more_is_refused() {
+        let mut pool = pool();
+        pool.add(tx(1, "alice", 0).with_fee(100), &funded(), 0)
+            .unwrap();
+        let short = SchedError::ReplacementUnderpriced {
+            fee: 109,
+            needed: 110,
+        };
+        assert_eq!(
+            pool.add(tx(2, "alice", 0).with_fee(109), &funded(), 0),
+            Err(short)
+        );
+        let same = pool.add(tx(3, "alice", 0).with_fee(100), &funded(), 0);
+        assert!(matches!(
+            same,
+            Err(SchedError::ReplacementUnderpriced { .. })
+        ));
+        // The original is still there.
+        assert!(pool.contains(1) && pool.len() == 1);
+    }
+
+    #[test]
+    fn the_required_increase_is_rounded_up() {
+        let mut pool = pool();
+        pool.add(tx(1, "alice", 0).with_fee(5), &funded(), 0)
+            .unwrap();
+        // 10% of 5 is half a unit, which rounds up to a whole one.
+        let short = SchedError::ReplacementUnderpriced { fee: 5, needed: 6 };
+        assert_eq!(
+            pool.add(tx(2, "alice", 0).with_fee(5), &funded(), 0),
+            Err(short)
+        );
+        assert!(
+            pool.add(tx(3, "alice", 0).with_fee(6), &funded(), 0)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_different_nonce_is_a_different_transaction_not_a_replacement() {
+        let mut pool = pool();
+        pool.add(tx(1, "alice", 0).with_fee(100), &funded(), 0)
+            .unwrap();
+        let admission = pool
+            .add(tx(2, "alice", 1).with_fee(1), &funded(), 0)
+            .unwrap();
+        assert_eq!(admission.replaced, None);
+        assert_eq!(pool.len(), 2);
     }
 }
