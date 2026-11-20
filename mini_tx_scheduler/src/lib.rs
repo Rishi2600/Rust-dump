@@ -2,6 +2,7 @@
 
 pub mod conflict;
 pub mod error;
+pub mod heap;
 pub mod ledger;
 pub mod priority;
 pub mod tx;
