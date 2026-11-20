@@ -8,6 +8,7 @@ pub mod ledger;
 pub mod mempool;
 pub mod node;
 pub mod priority;
+pub mod report;
 pub mod scenario;
 pub mod scheduler;
 pub mod sim;
