@@ -264,6 +264,36 @@ impl Mempool {
     }
 }
 
+impl Mempool {
+    /// Drop transactions that have waited too long, and return them.
+    ///
+    /// A transaction that is never chosen would otherwise stay forever. A
+    /// time limit bounds how long a sender can be left guessing, and gives
+    /// back the room.
+    pub fn expire(&mut self, slot: u64) -> Vec<Transaction> {
+        let ttl = self.config.ttl_slots;
+        let too_old = |pending: &Pending| slot.saturating_sub(pending.added_slot) >= ttl;
+        let mut doomed = Vec::new();
+        for (sender, queue) in &self.by_sender {
+            // When one transaction goes, so does everything queued behind
+            // it: without it they could never run.
+            let Some(first) = queue.values().find(|pending| too_old(pending)) else {
+                continue;
+            };
+            let from = first.tx.nonce;
+            doomed.extend(
+                queue
+                    .range(from..)
+                    .map(|(nonce, _)| (sender.clone(), *nonce)),
+            );
+        }
+        let removed = doomed
+            .into_iter()
+            .filter_map(|(sender, nonce)| self.remove(&sender, nonce));
+        removed.map(|pending| pending.tx).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -584,5 +614,53 @@ mod tests {
             .add(tx(2, "alice", 0).with_fee(20), &ledger, 0)
             .unwrap();
         assert_eq!((admission.replaced, admission.evicted), (Some(1), None));
+    }
+
+    fn ids(txs: &[Transaction]) -> Vec<u64> {
+        txs.iter().map(|tx| tx.id).collect()
+    }
+
+    #[test]
+    fn a_transaction_expires_after_waiting_its_full_time() {
+        let mut pool = Mempool::new(PoolConfig {
+            ttl_slots: 3,
+            ..PoolConfig::default()
+        });
+        pool.add(tx(1, "alice", 0), &funded(), 10).unwrap();
+        assert!(pool.expire(11).is_empty());
+        assert!(pool.expire(12).is_empty());
+        // Three slots after it was added, its time is up.
+        assert_eq!(ids(&pool.expire(13)), [1]);
+        assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn expiry_takes_everything_queued_behind_the_expired_transaction() {
+        let mut pool = Mempool::new(PoolConfig {
+            ttl_slots: 3,
+            ..PoolConfig::default()
+        });
+        pool.add(tx(1, "alice", 0), &funded(), 0).unwrap();
+        // Added later, so not old enough by itself.
+        pool.add(tx(2, "alice", 1), &funded(), 2).unwrap();
+        pool.add(tx(3, "bob", 0), &funded(), 2).unwrap();
+
+        assert_eq!(ids(&pool.expire(3)), [1, 2]);
+        // Bob's is as young as alice's second, and unaffected.
+        assert!(pool.contains(3) && pool.len() == 1);
+    }
+
+    #[test]
+    fn a_replacement_starts_its_wait_afresh() {
+        let mut pool = Mempool::new(PoolConfig {
+            ttl_slots: 3,
+            ..PoolConfig::default()
+        });
+        pool.add(tx(1, "alice", 0).with_fee(10), &funded(), 0)
+            .unwrap();
+        pool.add(tx(2, "alice", 0).with_fee(20), &funded(), 2)
+            .unwrap();
+        assert!(pool.expire(3).is_empty());
+        assert_eq!(ids(&pool.expire(5)), [2]);
     }
 }
