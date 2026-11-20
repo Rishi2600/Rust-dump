@@ -1,4 +1,5 @@
 use crate::error::{SchedError, SchedResult};
+use std::collections::BTreeSet;
 
 /// Compute units a transaction asks for when it does not say.
 pub const DEFAULT_UNITS: u64 = 100;
@@ -138,6 +139,27 @@ impl Transaction {
     }
 }
 
+impl Transaction {
+    /// The accounts this transaction may change: its sender, who pays, and
+    /// everyone it pays.
+    ///
+    /// A transaction declares up front which accounts it will touch. That
+    /// is what makes scheduling possible: two transactions can be compared
+    /// for a clash without running either of them.
+    pub fn writes(&self) -> BTreeSet<&str> {
+        let payees = self.transfers.iter().map(|transfer| transfer.to.as_str());
+        payees.chain([self.sender.as_str()]).collect()
+    }
+
+    /// The accounts this transaction looks at without changing. An account
+    /// it also writes counts as written, not read.
+    pub fn read_only(&self) -> BTreeSet<&str> {
+        let writes = self.writes();
+        let reads = self.reads.iter().map(String::as_str);
+        reads.filter(|account| !writes.contains(account)).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,5 +266,23 @@ mod tests {
         for name in ["", "two words", "é", "a.b", too_long.as_str()] {
             assert!(!is_name(name), "{name:?}");
         }
+    }
+
+    #[test]
+    fn a_transaction_writes_its_sender_and_everyone_it_pays() {
+        let tx = good().pay("carol", 5).pay("bob", 1);
+        // Paying bob twice still names him once.
+        assert_eq!(
+            tx.writes().into_iter().collect::<Vec<_>>(),
+            ["alice", "bob", "carol"]
+        );
+        assert!(tx.read_only().is_empty());
+    }
+
+    #[test]
+    fn an_account_that_is_both_read_and_written_counts_as_written() {
+        let tx = good().reading("oracle").reading("bob").reading("oracle");
+        assert_eq!(tx.read_only().into_iter().collect::<Vec<_>>(), ["oracle"]);
+        assert!(tx.writes().contains("bob"));
     }
 }
