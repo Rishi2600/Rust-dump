@@ -106,6 +106,29 @@ pub fn run(tx: &Transaction, ledger: &Ledger) -> Effect {
     charged(Status::Success, balances)
 }
 
+/// Write an effect into the ledger.
+pub fn apply(ledger: &mut Ledger, effect: &Effect) {
+    for (account, balance) in &effect.balances {
+        ledger.set_balance(account, *balance);
+    }
+    if let Some(account) = &effect.nonce_of {
+        ledger.bump_nonce(account);
+    }
+}
+
+/// Run transactions one after another, each seeing the result of the one
+/// before. This is the plain, obviously correct way to execute a block, and
+/// the standard that any cleverer way has to match.
+pub fn execute_serial(ledger: &mut Ledger, txs: &[Transaction]) -> Vec<Receipt> {
+    let mut receipts = Vec::with_capacity(txs.len());
+    for tx in txs {
+        let effect = run(tx, ledger);
+        apply(ledger, &effect);
+        receipts.push(effect.receipt);
+    }
+    receipts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,5 +244,80 @@ mod tests {
         let effect = run(&tx, &rich);
         assert!(matches!(effect.receipt.status, Status::Failed(_)));
         assert_eq!(balances(&effect), [("alice", 999)]);
+    }
+
+    fn statuses(receipts: &[Receipt]) -> Vec<&Status> {
+        receipts.iter().map(|receipt| &receipt.status).collect()
+    }
+
+    #[test]
+    fn applying_an_effect_changes_balances_and_uses_the_nonce() {
+        let mut ledger = ledger();
+        let tx = Transaction::new(1, "alice", 0).pay("bob", 100).with_fee(10);
+        let effect = run(&tx, &ledger);
+        apply(&mut ledger, &effect);
+        assert_eq!((ledger.balance("alice"), ledger.balance("bob")), (890, 150));
+        assert_eq!((ledger.nonce("alice"), ledger.nonce("bob")), (1, 0));
+        // The fee has left the ledger. Where it goes is the caller's affair.
+        assert_eq!(ledger.total(), 1050 - 10);
+    }
+
+    #[test]
+    fn later_transactions_see_what_earlier_ones_did() {
+        let mut ledger = ledger();
+        let txs = [
+            Transaction::new(1, "alice", 0).pay("bob", 500).with_fee(1),
+            // Bob started with 50. This only works because of the payment above.
+            Transaction::new(2, "bob", 0).pay("carol", 400).with_fee(1),
+            Transaction::new(3, "alice", 1)
+                .pay("carol", 100)
+                .with_fee(1),
+        ];
+        let receipts = execute_serial(&mut ledger, &txs);
+        assert!(
+            receipts
+                .iter()
+                .all(|receipt| receipt.status == Status::Success)
+        );
+        assert_eq!(ledger.balance("alice"), 1000 - 500 - 100 - 2);
+        assert_eq!(ledger.balance("bob"), 50 + 500 - 400 - 1);
+        assert_eq!(ledger.balance("carol"), 500);
+        assert_eq!(ledger.nonce("alice"), 2);
+    }
+
+    #[test]
+    fn the_same_transaction_cannot_be_applied_twice() {
+        let mut ledger = ledger();
+        let tx = Transaction::new(1, "alice", 0).pay("bob", 100).with_fee(10);
+        let receipts = execute_serial(&mut ledger, &[tx.clone(), tx]);
+        assert_eq!(
+            statuses(&receipts),
+            [&Status::Success, &Status::Rejected("wrong nonce".into())]
+        );
+        // Alice paid once.
+        assert_eq!(ledger.balance("alice"), 890);
+    }
+
+    #[test]
+    fn a_failed_transaction_uses_its_nonce_so_the_next_one_can_run() {
+        let mut ledger = ledger();
+        let txs = [
+            Transaction::new(1, "alice", 0)
+                .pay("bob", 9999)
+                .with_fee(10),
+            Transaction::new(2, "alice", 1).pay("bob", 5).with_fee(10),
+        ];
+        let receipts = execute_serial(&mut ledger, &txs);
+        assert!(matches!(receipts[0].status, Status::Failed(_)));
+        assert_eq!(receipts[1].status, Status::Success);
+        assert_eq!((ledger.balance("alice"), ledger.balance("bob")), (975, 55));
+    }
+
+    #[test]
+    fn a_rejected_transaction_leaves_the_ledger_exactly_as_it_was() {
+        let mut ledger = ledger();
+        let out_of_turn = Transaction::new(1, "alice", 7).pay("bob", 100).with_fee(10);
+        execute_serial(&mut ledger, &[out_of_turn]);
+        assert_eq!(ledger, self::ledger());
     }
 }
