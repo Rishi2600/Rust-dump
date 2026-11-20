@@ -1,0 +1,17 @@
+# Six transactions arrive before the first block. Between them they show
+# every ordering rule: priority by fee rate, a sender's own order, clashes
+# over a shared account, a read that waits for a write, and a failure.
+
+account alice 1000
+account bob   1000
+account carol 1000
+account dave    50
+account erin  1000
+
+slot 0
+tx alice pays shop 100 fee 10                        # 0.10 per unit
+tx bob   pays shop 200 fee 80                        # 0.80: also pays the shop, and goes first
+tx carol pays frank 50 fee 40                        # touches nobody else's accounts
+tx alice pays grace  5 fee 500                       # pays the most, but is alice's second
+tx dave  pays shop 900 fee 20                        # dave has 50: it fails, and still pays its fee
+tx erin  pays heidi 10 fee 30 units 400 reads shop   # only reads the shop

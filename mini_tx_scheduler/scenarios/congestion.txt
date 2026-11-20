@@ -1,0 +1,29 @@
+# More transactions than there is room for. A block holds 300 units and
+# nothing may wait longer than two slots, so only two blocks' worth get in.
+# Which ones depends entirely on the rule used to rank them.
+#
+# Run it with --compare to see each rule side by side.
+
+limit units 300
+limit ttl 2
+
+account s1 1000
+account s2 1000
+account s3 1000
+account s4 1000
+account s5 1000
+account s6 1000
+account s7 1000
+account s8 1000
+account s9 1000
+
+slot 0
+tx s1 pays p1 1 fee 5
+tx s2 pays p2 1 fee 10
+tx s3 pays p3 1 fee 150 units 300    # a big fee, but for a whole block of space
+tx s4 pays p4 1 fee 15
+tx s5 pays p5 1 fee 90
+tx s6 pays p6 1 fee 140 units 300
+tx s7 pays p7 1 fee 120              # the best rate: 1.20 per unit
+tx s8 pays p8 1 fee 8
+tx s9 pays p9 1 fee 110

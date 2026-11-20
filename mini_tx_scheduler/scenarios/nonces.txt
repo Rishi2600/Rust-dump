@@ -1,0 +1,17 @@
+# One sender, several transactions. They run strictly in the order sent,
+# whatever each one pays, and a better-paying replacement can take the place
+# of one that is still waiting.
+
+limit units 200
+
+account alice 1000
+account bob   1000
+
+slot 0
+tx alice pays shop 10 fee 5          # alice's first
+tx alice pays shop 20 fee 90         # her second pays far more, and still waits its turn
+tx alice pays shop 30 fee 60         # her third
+tx bob   pays cafe  5 fee 40
+
+slot 1
+tx bob   pays cafe  5 fee 1
