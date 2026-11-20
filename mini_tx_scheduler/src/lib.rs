@@ -10,5 +10,6 @@ pub mod node;
 pub mod priority;
 pub mod scenario;
 pub mod scheduler;
+pub mod sim;
 pub mod tx;
 pub mod workload;
