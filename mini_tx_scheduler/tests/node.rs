@@ -2,6 +2,7 @@
 
 use mini_tx_scheduler::executor::Status;
 use mini_tx_scheduler::ledger::Ledger;
+use mini_tx_scheduler::mempool::PoolConfig;
 use mini_tx_scheduler::node::{Node, NodeConfig};
 use mini_tx_scheduler::scheduler::BlockLimits;
 use mini_tx_scheduler::tx::Transaction;
@@ -165,4 +166,40 @@ fn the_validator_account_can_be_chosen() {
     node.produce_block();
     assert_eq!(node.ledger().balance("treasury"), 9);
     assert_eq!(node.ledger().balance("validator"), 0);
+}
+
+#[test]
+fn a_transaction_that_never_becomes_runnable_is_eventually_dropped() {
+    let config = NodeConfig {
+        pool: PoolConfig {
+            ttl_slots: 3,
+            ..PoolConfig::default()
+        },
+        ..NodeConfig::default()
+    };
+    let mut node = Node::new(ledger(), config);
+    // Nonce 0 never arrives, so this can never run.
+    node.submit(tx(1, "alice", 1, "dave", 5, 50)).unwrap();
+
+    for slot in 0..3 {
+        let block = node.produce_block();
+        assert!(
+            block.expired.is_empty() && block.schedule.is_empty(),
+            "slot {slot}"
+        );
+    }
+    let block = node.produce_block();
+    assert_eq!(block.expired, [1]);
+    assert!(node.pool().is_empty());
+    // Having expired, it can be sent again.
+    assert!(node.submit(tx(1, "alice", 1, "dave", 5, 50)).is_ok());
+}
+
+#[test]
+fn a_transaction_included_in_time_does_not_expire() {
+    let mut node = node();
+    node.submit(tx(1, "alice", 0, "dave", 5, 50)).unwrap();
+    let block = node.produce_block();
+    assert!(block.expired.is_empty());
+    assert_eq!(block.schedule.ids(), [1]);
 }

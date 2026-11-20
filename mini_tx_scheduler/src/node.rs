@@ -34,6 +34,9 @@ pub struct Block {
     pub receipts: Vec<Receipt>,
     /// The fees charged, in total.
     pub fees: u64,
+    /// Ids of transactions dropped at the start of the slot for having
+    /// waited too long.
+    pub expired: Vec<u64>,
 }
 
 /// The whole machine: a ledger, a pool of waiting transactions, and a clock
@@ -80,6 +83,8 @@ impl Node {
     /// and finally removed from the pool.
     pub fn produce_block(&mut self) -> Block {
         let slot = self.slot;
+        // Housekeeping first, so that nothing stale is considered.
+        let expired = self.pool.expire(slot).iter().map(|tx| tx.id).collect();
         let policy = self.config.pool.policy;
         let schedule = build_schedule(&self.pool, &self.ledger, policy, &self.config.limits);
         let threads = self.config.limits.threads;
@@ -99,6 +104,7 @@ impl Node {
             schedule,
             receipts,
             fees,
+            expired,
         }
     }
 }
