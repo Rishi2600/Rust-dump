@@ -6,6 +6,7 @@ pub mod executor;
 pub mod heap;
 pub mod ledger;
 pub mod mempool;
+pub mod node;
 pub mod priority;
 pub mod scheduler;
 pub mod tx;
