@@ -52,11 +52,23 @@ pub struct BatchPlanner {
     last_read: HashMap<String, usize>,
     /// How many transactions each batch holds so far.
     widths: Vec<usize>,
+    /// The most transactions a batch may hold, if there is a limit.
+    max_width: Option<usize>,
 }
 
 impl BatchPlanner {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Allow at most `width` transactions in a batch.
+    ///
+    /// A batch runs on a fixed number of threads. Putting more transactions
+    /// in it than there are threads gains nothing, so the extras are moved
+    /// to a later batch.
+    pub fn with_width(mut self, width: usize) -> Self {
+        self.max_width = Some(width.max(1));
+        self
     }
 
     /// How many batches have been started.
@@ -84,6 +96,13 @@ impl BatchPlanner {
             // A reader waits only for writers. Other readers are company.
             if let Some(written) = self.last_write.get(*account) {
                 batch = batch.max(written + 1);
+            }
+        }
+        // A full batch pushes the transaction later. Later is always safe:
+        // it only has to come after the ones it clashes with.
+        if let Some(limit) = self.max_width {
+            while self.width(batch) >= limit {
+                batch += 1;
             }
         }
 
@@ -236,5 +255,45 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_batch_holds_no_more_than_the_threads_that_run_it() {
+        let txs = [
+            payment(1, "a", "b"),
+            payment(2, "c", "d"),
+            payment(3, "e", "f"),
+            payment(4, "g", "h"),
+            payment(5, "i", "j"),
+        ];
+        let mut planner = BatchPlanner::new().with_width(2);
+        let placed: Vec<usize> = txs.iter().map(|tx| planner.place(tx)).collect();
+        assert_eq!(placed, [0, 0, 1, 1, 2]);
+        assert_eq!(
+            (planner.width(0), planner.width(1), planner.width(2)),
+            (2, 2, 1)
+        );
+    }
+
+    #[test]
+    fn a_transaction_moved_by_the_width_limit_still_orders_what_follows() {
+        let txs = [
+            payment(1, "a", "b"),
+            payment(2, "c", "d"),
+            // Clashes with nothing, but batch 0 is full: goes to batch 1.
+            payment(3, "e", "f"),
+            // Clashes with the one just moved, so it must come after batch 1.
+            payment(4, "f", "g"),
+        ];
+        let mut planner = BatchPlanner::new().with_width(2);
+        let placed: Vec<usize> = txs.iter().map(|tx| planner.place(tx)).collect();
+        assert_eq!(placed, [0, 0, 1, 2]);
+    }
+
+    #[test]
+    fn a_width_of_zero_is_treated_as_one() {
+        let mut planner = BatchPlanner::new().with_width(0);
+        assert_eq!(planner.place(&payment(1, "a", "b")), 0);
+        assert_eq!(planner.place(&payment(2, "c", "d")), 1);
     }
 }
