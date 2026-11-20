@@ -204,6 +204,6 @@ chain.
   possible fill of a block.
 - A transaction cannot pull an earlier one from the same sender forward by
   paying more ("child pays for parent").
-- Only successful or expired transactions leave the pool. Nothing tells the
-  sender why theirs was dropped.
+- A transaction that expires, or is pushed out of a full pool, simply
+  disappears. Nothing tells its sender.
 - One node, no network, no competing block builders.
