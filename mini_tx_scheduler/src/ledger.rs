@@ -9,6 +9,8 @@ use crate::error::{SchedError, SchedResult};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Ledger {
     balances: BTreeMap<String, u64>,
+    /// How many transactions each account has had applied.
+    nonces: BTreeMap<String, u64>,
 }
 
 impl Ledger {
@@ -80,6 +82,23 @@ impl Ledger {
     }
 }
 
+impl Ledger {
+    /// The nonce the next transaction from `account` must carry.
+    ///
+    /// Each account numbers its transactions 0, 1, 2 and so on, and the
+    /// ledger accepts them only in that order, each exactly once. That one
+    /// counter does two jobs: a transaction cannot be applied twice (a
+    /// replay), and one sender's transactions cannot be reordered.
+    pub fn nonce(&self, account: &str) -> u64 {
+        self.nonces.get(account).copied().unwrap_or(0)
+    }
+
+    /// Record that the account's current nonce has been used.
+    pub fn bump_nonce(&mut self, account: &str) {
+        *self.nonces.entry(account.to_string()).or_insert(0) += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,5 +144,23 @@ mod tests {
         ledger.debit("alice", 10).unwrap();
         assert_eq!(ledger, Ledger::with_balances([("bob", 5)]));
         assert_eq!(ledger.accounts().collect::<Vec<_>>(), [("bob", 5)]);
+    }
+
+    #[test]
+    fn each_account_counts_its_own_transactions() {
+        let mut ledger = Ledger::new();
+        assert_eq!(ledger.nonce("alice"), 0);
+        ledger.bump_nonce("alice");
+        ledger.bump_nonce("alice");
+        ledger.bump_nonce("bob");
+        assert_eq!((ledger.nonce("alice"), ledger.nonce("bob")), (2, 1));
+        assert_eq!(ledger.nonce("carol"), 0);
+    }
+
+    #[test]
+    fn two_ledgers_differ_if_only_their_nonces_do() {
+        let mut used = Ledger::with_balances([("alice", 10)]);
+        used.bump_nonce("alice");
+        assert_ne!(used, Ledger::with_balances([("alice", 10)]));
     }
 }
