@@ -154,11 +154,45 @@ impl Mempool {
         }
         self.check_admission(&tx, ledger)?;
         let replaced = self.replace_existing(&tx)?;
+        // A replacement reuses the place of what it replaced. Anything else
+        // needs a free place, or has to win one.
+        let evicted = match replaced {
+            Some(_) => None,
+            None => self.make_room(&tx)?,
+        };
         self.insert(tx, slot);
-        Ok(Admission {
-            replaced,
-            evicted: None,
-        })
+        Ok(Admission { replaced, evicted })
+    }
+
+    /// Make sure there is room for `tx`, by pushing out the least valuable
+    /// transaction if the pool is full.
+    ///
+    /// A full pool should hold the best-paying transactions it has seen, not
+    /// merely the earliest. So a newcomer may displace something, but only
+    /// something it outranks.
+    fn make_room(&mut self, tx: &Transaction) -> SchedResult<Option<u64>> {
+        if self.len() < self.config.capacity {
+            return Ok(None);
+        }
+        let policy = self.config.policy;
+        // Only the last transaction in a sender's queue can go. Removing one
+        // from the middle would strand everything queued behind it. The
+        // newcomer's own sender is left alone for the same reason.
+        let tails = self
+            .by_sender
+            .iter()
+            .filter(|(sender, _)| **sender != tx.sender);
+        let tails = tails.filter_map(|(_, queue)| queue.values().next_back());
+        let Some(victim) = tails.min_by_key(|pending| policy.key(&pending.tx, pending.arrival))
+        else {
+            return Err(SchedError::PoolFull);
+        };
+        if policy.key(tx, self.next_arrival) <= policy.key(&victim.tx, victim.arrival) {
+            return Err(SchedError::PoolFull);
+        }
+        let (sender, nonce, id) = (victim.tx.sender.clone(), victim.tx.nonce, victim.tx.id);
+        self.remove(&sender, nonce);
+        Ok(Some(id))
     }
 
     /// If the sender already has a transaction waiting with this nonce,
@@ -459,5 +493,96 @@ mod tests {
             .unwrap();
         assert_eq!(admission.replaced, None);
         assert_eq!(pool.len(), 2);
+    }
+
+    fn small_pool(capacity: usize) -> Mempool {
+        Mempool::new(PoolConfig {
+            capacity,
+            ..PoolConfig::default()
+        })
+    }
+
+    fn many_funded() -> Ledger {
+        Ledger::with_balances([
+            ("alice", 1000),
+            ("bob", 1000),
+            ("carol", 1000),
+            ("dave", 1000),
+        ])
+    }
+
+    #[test]
+    fn a_full_pool_drops_its_worst_transaction_for_a_better_one() {
+        let (mut pool, ledger) = (small_pool(3), many_funded());
+        pool.add(tx(1, "alice", 0).with_fee(30), &ledger, 0)
+            .unwrap();
+        pool.add(tx(2, "bob", 0).with_fee(10), &ledger, 0).unwrap();
+        pool.add(tx(3, "carol", 0).with_fee(20), &ledger, 0)
+            .unwrap();
+
+        let admission = pool.add(tx(4, "dave", 0).with_fee(25), &ledger, 0).unwrap();
+        assert_eq!(admission.evicted, Some(2), "bob paid least");
+        assert_eq!(pool.len(), 3);
+        assert!(pool.contains(4) && !pool.contains(2));
+    }
+
+    #[test]
+    fn a_full_pool_refuses_what_does_not_outbid_anything() {
+        let (mut pool, ledger) = (small_pool(2), many_funded());
+        pool.add(tx(1, "alice", 0).with_fee(30), &ledger, 0)
+            .unwrap();
+        pool.add(tx(2, "bob", 0).with_fee(20), &ledger, 0).unwrap();
+        assert_eq!(
+            pool.add(tx(3, "carol", 0).with_fee(15), &ledger, 0),
+            Err(SchedError::PoolFull)
+        );
+        // Matching the lowest is not outbidding it: the earlier arrival stays.
+        assert_eq!(
+            pool.add(tx(4, "carol", 0).with_fee(20), &ledger, 0),
+            Err(SchedError::PoolFull)
+        );
+        assert!(pool.contains(1) && pool.contains(2));
+    }
+
+    #[test]
+    fn eviction_never_leaves_a_gap_in_a_senders_queue() {
+        let (mut pool, ledger) = (small_pool(3), many_funded());
+        // Alice's first transaction is the cheapest in the pool, but another
+        // of hers is queued behind it.
+        pool.add(tx(1, "alice", 0).with_fee(5), &ledger, 0).unwrap();
+        pool.add(tx(2, "alice", 1).with_fee(50), &ledger, 0)
+            .unwrap();
+        pool.add(tx(3, "bob", 0).with_fee(40), &ledger, 0).unwrap();
+
+        let admission = pool
+            .add(tx(4, "carol", 0).with_fee(45), &ledger, 0)
+            .unwrap();
+        // Bob's goes, not alice's cheap one: hers cannot leave without
+        // stranding the transaction that depends on it.
+        assert_eq!(admission.evicted, Some(3));
+        assert!(pool.contains(1) && pool.contains(2));
+    }
+
+    #[test]
+    fn a_sender_does_not_evict_their_own_earlier_transactions() {
+        let (mut pool, ledger) = (small_pool(2), many_funded());
+        pool.add(tx(1, "alice", 0).with_fee(5), &ledger, 0).unwrap();
+        pool.add(tx(2, "alice", 1).with_fee(5), &ledger, 0).unwrap();
+        // Evicting nonce 1 to admit nonce 2 would leave nonce 2 unreachable.
+        assert_eq!(
+            pool.add(tx(3, "alice", 2).with_fee(500), &ledger, 0),
+            Err(SchedError::PoolFull)
+        );
+    }
+
+    #[test]
+    fn a_replacement_needs_no_room() {
+        let (mut pool, ledger) = (small_pool(1), many_funded());
+        pool.add(tx(1, "alice", 0).with_fee(10), &ledger, 0)
+            .unwrap();
+        let admission = pool
+            .add(tx(2, "alice", 0).with_fee(20), &ledger, 0)
+            .unwrap();
+        assert_eq!((admission.replaced, admission.evicted), (Some(1), None));
     }
 }
