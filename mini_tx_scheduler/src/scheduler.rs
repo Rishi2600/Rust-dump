@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::conflict::BatchPlanner;
 use crate::heap::MaxHeap;
 use crate::ledger::Ledger;
@@ -118,6 +120,8 @@ pub fn build_schedule(
     }
     let mut planner = BatchPlanner::new().with_width(limits.threads);
     let mut schedule = Schedule::default();
+    // What each sender has already committed to spending in this block.
+    let mut reserved: HashMap<&str, u64> = HashMap::new();
     while let Some(candidate) = heap.pop() {
         let Some(pending) = pool.get(&candidate.sender, candidate.nonce) else {
             continue;
@@ -133,6 +137,17 @@ pub fn build_schedule(
         if tx.units > limits.max_units.saturating_sub(schedule.units) {
             continue;
         }
+        // Every transaction in a block must be able to pay its fee when its
+        // turn comes. The ledger shows what the sender has now, not what
+        // will be left after their earlier transactions in this same block,
+        // so that is kept track of here. Money the sender may receive during
+        // the block is not counted: only they can spend from their account,
+        // so this estimate can be too cautious but never too generous.
+        let spent = reserved.entry(tx.sender.as_str()).or_insert(0);
+        if ledger.balance(&tx.sender).saturating_sub(*spent) < tx.fee {
+            continue;
+        }
+        *spent = spent.saturating_add(tx.spend().unwrap_or(u64::MAX));
         let batch = planner.place(tx);
         schedule.units += tx.units;
         schedule.picks.push(Pick {
@@ -321,5 +336,57 @@ mod tests {
         assert_eq!(limited(&pool, 10_000, 2).ids(), [2, 3]);
         assert!(limited(&pool, 10_000, 0).is_empty());
         assert!(limited(&pool, 0, 100).is_empty());
+    }
+
+    #[test]
+    fn a_sender_is_not_scheduled_beyond_what_they_can_pay_for() {
+        let ledger = Ledger::with_balances([("alice", 100), ("bob", 10_000)]);
+        let mut pool = Mempool::new(PoolConfig::default());
+        // Alice's first uses 70 of her 100: a payment of 60 and a fee of 10.
+        pool.add(
+            Transaction::new(1, "alice", 0).pay("zed", 60).with_fee(10),
+            &ledger,
+            0,
+        )
+        .unwrap();
+        // Her second offers a fee of 50, which the 30 left cannot cover.
+        pool.add(
+            Transaction::new(2, "alice", 1).pay("zed", 1).with_fee(50),
+            &ledger,
+            0,
+        )
+        .unwrap();
+        pool.add(tx(3, "bob", 0, "yan", 5), &ledger, 0).unwrap();
+
+        let chosen = build_schedule(&pool, &ledger, Policy::FeePerUnit, &BlockLimits::default());
+        assert_eq!(chosen.ids(), [1, 3]);
+        // The second stays in the pool for a later block.
+        assert!(pool.contains(2));
+    }
+
+    #[test]
+    fn a_sender_who_has_since_run_out_of_money_is_skipped() {
+        let mut pool = Mempool::new(PoolConfig::default());
+        pool.add(tx(1, "alice", 0, "zed", 50), &ledger(), 0)
+            .unwrap();
+        pool.add(tx(2, "bob", 0, "yan", 5), &ledger(), 0).unwrap();
+        // By the time the block is built, alice's balance has dropped.
+        let later = Ledger::with_balances([("alice", 20), ("bob", 10_000)]);
+        let chosen = build_schedule(&pool, &later, Policy::FeePerUnit, &BlockLimits::default());
+        assert_eq!(chosen.ids(), [2]);
+    }
+
+    #[test]
+    fn a_sender_can_have_several_transactions_in_a_block_if_they_can_afford_them() {
+        let pool = pool_of(vec![
+            tx(1, "alice", 0, "zed", 30),
+            tx(2, "alice", 1, "zed", 20),
+            tx(3, "alice", 2, "zed", 10),
+        ]);
+        let chosen = schedule(&pool, Policy::FeePerUnit);
+        assert_eq!(chosen.ids(), [1, 2, 3]);
+        // They all change alice's account, so they run one after another.
+        let batches: Vec<usize> = chosen.picks.iter().map(|pick| pick.batch).collect();
+        assert_eq!(batches, [0, 1, 2]);
     }
 }
