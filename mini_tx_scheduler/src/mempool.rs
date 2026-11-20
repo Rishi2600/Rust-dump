@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
+use crate::error::{SchedError, SchedResult};
+use crate::ledger::Ledger;
 use crate::priority::Policy;
 use crate::tx::Transaction;
 
@@ -130,6 +132,74 @@ impl Mempool {
     }
 }
 
+/// What happened to the rest of the pool when a transaction was accepted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Admission {
+    /// The id of a transaction this one took the place of.
+    pub replaced: Option<u64>,
+    /// The id of a transaction pushed out to make room.
+    pub evicted: Option<u64>,
+}
+
+impl Mempool {
+    /// Offer a transaction to the pool.
+    ///
+    /// The pool is the first line of defence. Anyone can send it anything,
+    /// for free, so it must refuse whatever could never be worth including
+    /// before spending memory on it.
+    pub fn add(&mut self, tx: Transaction, ledger: &Ledger, slot: u64) -> SchedResult<Admission> {
+        tx.validate()?;
+        if self.ids.contains(&tx.id) {
+            return Err(SchedError::Duplicate(tx.id));
+        }
+        self.check_admission(&tx, ledger)?;
+        self.insert(tx, slot);
+        Ok(Admission::default())
+    }
+
+    /// The checks that depend on the ledger: is this transaction one that
+    /// could run, now or soon?
+    fn check_admission(&self, tx: &Transaction, ledger: &Ledger) -> SchedResult<()> {
+        if tx.fee < self.config.min_fee {
+            return Err(SchedError::FeeTooLow {
+                fee: tx.fee,
+                minimum: self.config.min_fee,
+            });
+        }
+        let (sender, nonce) = (tx.sender.clone(), tx.nonce);
+        let expected = ledger.nonce(&tx.sender);
+        // A nonce already used can never run again.
+        if nonce < expected {
+            return Err(SchedError::StaleNonce {
+                sender,
+                nonce,
+                expected,
+            });
+        }
+        // A nonce slightly ahead is fine: it waits for the ones before it.
+        // One far ahead may never become runnable, and would sit here
+        // taking up room for nothing.
+        if nonce - expected > self.config.max_nonce_gap {
+            return Err(SchedError::NonceTooFar {
+                sender,
+                nonce,
+                expected,
+            });
+        }
+        // The fee is charged even when a transaction fails, so a sender who
+        // cannot cover it has nothing to offer for the space.
+        let balance = ledger.balance(&tx.sender);
+        if balance < tx.fee {
+            return Err(SchedError::CannotPayFee {
+                sender,
+                balance,
+                fee: tx.fee,
+            });
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,5 +272,96 @@ mod tests {
         pool.insert(tx(2, "alice", 0), 0);
         assert_eq!(pool.len(), 1);
         assert!(!pool.contains(1) && pool.contains(2));
+    }
+
+    fn funded() -> Ledger {
+        Ledger::with_balances([("alice", 1000), ("bob", 1000), ("poor", 5)])
+    }
+
+    #[test]
+    fn a_sound_transaction_is_accepted() {
+        let mut pool = pool();
+        assert_eq!(
+            pool.add(tx(1, "alice", 0), &funded(), 0),
+            Ok(Admission::default())
+        );
+        assert!(pool.contains(1));
+    }
+
+    #[test]
+    fn a_transaction_slightly_ahead_of_its_turn_waits_in_the_queue() {
+        let mut pool = pool();
+        // Nonces 1 and 2 arrive before nonce 0.
+        assert!(pool.add(tx(1, "alice", 2), &funded(), 0).is_ok());
+        assert!(pool.add(tx(2, "alice", 1), &funded(), 0).is_ok());
+        assert_eq!(pool.len(), 2);
+    }
+
+    #[test]
+    fn each_reason_for_refusal_has_its_own_error() {
+        let mut pool = Mempool::new(PoolConfig {
+            min_fee: 5,
+            max_nonce_gap: 3,
+            ..PoolConfig::default()
+        });
+        let mut ledger = funded();
+        ledger.bump_nonce("bob");
+        ledger.bump_nonce("bob");
+
+        let cheap = tx(1, "alice", 0).with_fee(4);
+        assert_eq!(
+            pool.add(cheap, &ledger, 0),
+            Err(SchedError::FeeTooLow { fee: 4, minimum: 5 })
+        );
+
+        let stale = SchedError::StaleNonce {
+            sender: "bob".into(),
+            nonce: 1,
+            expected: 2,
+        };
+        assert_eq!(pool.add(tx(2, "bob", 1), &ledger, 0), Err(stale));
+
+        let far = SchedError::NonceTooFar {
+            sender: "bob".into(),
+            nonce: 6,
+            expected: 2,
+        };
+        assert_eq!(pool.add(tx(3, "bob", 6), &ledger, 0), Err(far));
+        // Three ahead is the limit, and is still allowed.
+        assert!(pool.add(tx(4, "bob", 5), &ledger, 0).is_ok());
+
+        let broke = SchedError::CannotPayFee {
+            sender: "poor".into(),
+            balance: 5,
+            fee: 10,
+        };
+        assert_eq!(pool.add(tx(5, "poor", 0), &ledger, 0), Err(broke));
+        assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
+    fn the_same_transaction_is_not_accepted_twice() {
+        let mut pool = pool();
+        pool.add(tx(1, "alice", 0), &funded(), 0).unwrap();
+        assert_eq!(
+            pool.add(tx(1, "alice", 0), &funded(), 0),
+            Err(SchedError::Duplicate(1))
+        );
+        // The id is what counts, even on a different sender and nonce.
+        assert_eq!(
+            pool.add(tx(1, "bob", 0), &funded(), 0),
+            Err(SchedError::Duplicate(1))
+        );
+    }
+
+    #[test]
+    fn a_malformed_transaction_never_reaches_the_ledger_checks() {
+        let mut pool = pool();
+        let empty = Transaction::new(1, "alice", 0).with_fee(10);
+        assert!(matches!(
+            pool.add(empty, &funded(), 0),
+            Err(SchedError::Invalid(_))
+        ));
+        assert!(pool.is_empty());
     }
 }
